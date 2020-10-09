@@ -19,7 +19,6 @@
 package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateReader;
-import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilderAndConsumerTest;
 import org.apache.flink.runtime.io.network.buffer.NetworkBufferPool;
@@ -75,6 +74,12 @@ public class RecoveredInputChannelTest {
 		testConcurrentReadStateAndRelease(isRemote);
 	}
 
+	/**
+	 * Tests that there are no potential deadlock and buffer leak issues while the following actions happen concurrently:
+	 * 1. Task thread processes the recovered state buffer from RecoveredInputChannel.
+	 * 2. Unspilling IO thread reads the recovered state and queues the buffer into RecoveredInputChannel.
+	 * 3. Canceler thread closes the input gate and releases the RecoveredInputChannel.
+	 */
 	@Test
 	public void testConcurrentReadStateAndProcessAndRelease() throws Exception {
 		testConcurrentReadStateAndProcessAndRelease(isRemote);
@@ -99,7 +104,7 @@ public class RecoveredInputChannelTest {
 	private void testReadEmptyStateOrThrowException(boolean isRemote, ChannelStateReader reader) throws Exception {
 		// setup
 		final int totalBuffers = 10;
-		final NetworkBufferPool globalPool = new NetworkBufferPool(totalBuffers, 32, 2);
+		final NetworkBufferPool globalPool = new NetworkBufferPool(totalBuffers, 32);
 		final SingleInputGate inputGate = createInputGate(globalPool);
 		final RecoveredInputChannel inputChannel = createRecoveredChannel(isRemote, inputGate);
 
@@ -132,7 +137,7 @@ public class RecoveredInputChannelTest {
 	private void testConcurrentReadStateAndProcess(boolean isRemote) throws Exception {
 		// setup
 		final int totalBuffers = 10;
-		final NetworkBufferPool globalPool = new NetworkBufferPool(totalBuffers, 32, 2);
+		final NetworkBufferPool globalPool = new NetworkBufferPool(totalBuffers, 32);
 		final SingleInputGate inputGate = createInputGate(globalPool);
 		final RecoveredInputChannel inputChannel = createRecoveredChannel(isRemote, inputGate);
 
@@ -147,8 +152,8 @@ public class RecoveredInputChannelTest {
 			inputGate.setInputChannels(inputChannel);
 			inputGate.setup();
 
-			final Callable<Void> processTask = processRecoveredBufferTask(inputChannel, totalStates, states);
-			final Callable<Void> readStateTask = readRecoveredStateTask(inputChannel, reader);
+			final Callable<Void> processTask = processRecoveredBufferTask(inputChannel, totalStates, states, false);
+			final Callable<Void> readStateTask = readRecoveredStateTask(inputChannel, reader, false);
 
 			submitTasksAndWaitForResults(executor, new Callable[] {readStateTask, processTask});
 		} catch (Throwable t) {
@@ -162,7 +167,7 @@ public class RecoveredInputChannelTest {
 	private void testConcurrentReadStateAndRelease(boolean isRemote) throws Exception {
 		// setup
 		final int totalBuffers = 10;
-		final NetworkBufferPool globalPool = new NetworkBufferPool(totalBuffers, 32, 2);
+		final NetworkBufferPool globalPool = new NetworkBufferPool(totalBuffers, 32);
 		final SingleInputGate inputGate = createInputGate(globalPool);
 		final RecoveredInputChannel inputChannel = createRecoveredChannel(isRemote, inputGate);
 
@@ -179,7 +184,7 @@ public class RecoveredInputChannelTest {
 
 			submitTasksAndWaitForResults(
 				executor,
-				new Callable[] {readRecoveredStateTask(inputChannel, reader), releaseChannelTask(inputChannel)});
+				new Callable[] {readRecoveredStateTask(inputChannel, reader, true), releaseChannelTask(inputChannel)});
 		} catch (Throwable t) {
 			thrown = t;
 		} finally {
@@ -191,7 +196,7 @@ public class RecoveredInputChannelTest {
 	private void testConcurrentReadStateAndProcessAndRelease(boolean isRemote) throws Exception {
 		// setup
 		final int totalBuffers = 10;
-		final NetworkBufferPool globalPool = new NetworkBufferPool(totalBuffers, 32, 2);
+		final NetworkBufferPool globalPool = new NetworkBufferPool(totalBuffers, 32);
 		final SingleInputGate inputGate = createInputGate(globalPool);
 		final RecoveredInputChannel inputChannel = createRecoveredChannel(isRemote, inputGate);
 
@@ -205,8 +210,8 @@ public class RecoveredInputChannelTest {
 			inputGate.setInputChannels(inputChannel);
 			inputGate.setup();
 
-			final Callable<Void> processTask = processRecoveredBufferTask(inputChannel, totalStates, states);
-			final Callable<Void> readStateTask = readRecoveredStateTask(inputChannel, reader);
+			final Callable<Void> processTask = processRecoveredBufferTask(inputChannel, totalStates, states, true);
+			final Callable<Void> readStateTask = readRecoveredStateTask(inputChannel, reader, true);
 			final Callable<Void> releaseTask = releaseChannelTask(inputChannel);
 
 			submitTasksAndWaitForResults(executor, new Callable[] {readStateTask, processTask, releaseTask});
@@ -218,24 +223,26 @@ public class RecoveredInputChannelTest {
 		}
 	}
 
-	private Callable<Void> readRecoveredStateTask(RecoveredInputChannel inputChannel, ChannelStateReader reader) {
+	private Callable<Void> readRecoveredStateTask(RecoveredInputChannel inputChannel, ChannelStateReader reader, boolean verifyRelease) {
 		return () -> {
 			try {
 				inputChannel.readRecoveredState(reader);
-			} catch (CancelTaskException ex) {
-				// within expectation
+			} catch (Throwable t) {
+				if (!(verifyRelease && inputChannel.isReleased())) {
+					throw new AssertionError("Exceptions are expected here only if the input channel was released", t);
+				}
 			}
 
 			return null;
 		};
 	}
 
-	private Callable<Void> processRecoveredBufferTask(RecoveredInputChannel inputChannel, int totalStates, int[] states) {
+	private Callable<Void> processRecoveredBufferTask(RecoveredInputChannel inputChannel, int totalStates, int[] states, boolean verifyRelease) {
 		return () -> {
 			// process all the queued state buffers and verify the data
 			int numProcessedStates = 0;
 			while (numProcessedStates < totalStates) {
-				if (inputChannel.isReleased()) {
+				if (verifyRelease && inputChannel.isReleased()) {
 					break;
 				}
 				if (inputChannel.getNumberOfQueuedBuffers() == 0) {
@@ -250,8 +257,10 @@ public class RecoveredInputChannelTest {
 						buffer.recycleBuffer();
 						numProcessedStates++;
 					}
-				} catch (IllegalStateException e) {
-					assertTrue(e.getMessage().contains("Queried for a buffer after channel has been closed"));
+				} catch (Throwable t) {
+					if (!(verifyRelease && inputChannel.isReleased())) {
+						throw new AssertionError("Exceptions are expected here only if the input channel was released", t);
+					}
 				}
 			}
 

@@ -129,6 +129,14 @@ class FlinkRelMdHandlerTestBase {
     streamPhysicalTraits = cluster.traitSetOf(FlinkConventions.STREAM_PHYSICAL)
   }
 
+  protected def bd(value: Long): BigDecimal = {
+    BigDecimal.valueOf(value)
+  }
+
+  protected def bd(value: Double): BigDecimal = {
+    BigDecimal.valueOf(value)
+  }
+
   protected val intType: RelDataType = typeFactory.createFieldTypeFromLogicalType(
     new IntType(false))
 
@@ -741,7 +749,7 @@ class FlinkRelMdHandlerTestBase {
       false,
       false,
       false,
-      Seq(Integer.valueOf(0)).toList,
+      Seq(Integer.valueOf(3)).toList,
       -1,
       RelCollationImpl.of(),
       relDataType,

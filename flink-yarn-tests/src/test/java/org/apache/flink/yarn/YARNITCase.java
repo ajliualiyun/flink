@@ -18,6 +18,7 @@
 
 package org.apache.flink.yarn;
 
+import org.apache.flink.api.common.cache.DistributedCache;
 import org.apache.flink.client.deployment.ClusterSpecification;
 import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.configuration.AkkaOptions;
@@ -30,12 +31,13 @@ import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
 import org.apache.flink.yarn.configuration.YarnConfigOptions;
+import org.apache.flink.yarn.testjob.YarnTestArchiveJob;
 import org.apache.flink.yarn.testjob.YarnTestCacheJob;
-import org.apache.flink.yarn.util.YarnTestUtils;
+import org.apache.flink.yarn.util.TestUtils;
 
-import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.junit.BeforeClass;
 import org.junit.Rule;
@@ -65,49 +67,60 @@ public class YARNITCase extends YarnTestBase {
 	private static final int sleepIntervalInMS = 100;
 
 	@Rule
-	public final TemporaryFolder temporaryFolder = new TemporaryFolder(new File("/tmp"));
+	public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
 	@BeforeClass
 	public static void setup() {
 		YARN_CONFIGURATION.set(YarnTestBase.TEST_CLUSTER_NAME_KEY, "flink-yarn-tests-per-job");
-		startYARNWithConfig(YARN_CONFIGURATION);
+		startYARNWithConfig(YARN_CONFIGURATION, true);
 	}
 
 	@Test
 	public void testPerJobModeWithEnableSystemClassPathIncludeUserJar() throws Exception {
 		runTest(() -> deployPerJob(
 			createDefaultConfiguration(YarnConfigOptions.UserJarInclusion.FIRST),
-			getTestingJobGraph()));
+			getTestingJobGraph(),
+			true));
 	}
 
 	@Test
 	public void testPerJobModeWithDisableSystemClassPathIncludeUserJar() throws Exception {
 		runTest(() -> deployPerJob(
 			createDefaultConfiguration(YarnConfigOptions.UserJarInclusion.DISABLED),
-			getTestingJobGraph()));
+			getTestingJobGraph(),
+			true));
 	}
 
 	@Test
 	public void testPerJobModeWithDistributedCache() throws Exception {
 		runTest(() -> deployPerJob(
 			createDefaultConfiguration(YarnConfigOptions.UserJarInclusion.DISABLED),
-			YarnTestCacheJob.getDistributedCacheJobGraph(tmp.newFolder())));
+			YarnTestCacheJob.getDistributedCacheJobGraph(tmp.newFolder()),
+			true));
 	}
 
 	@Test
 	public void testPerJobWithProvidedLibDirs() throws Exception {
-		final File tmpFlinkReleaseBinary = temporaryFolder.newFolder("flink-provided-lib");
-		FileUtils.copyDirectory(flinkLibFolder, tmpFlinkReleaseBinary);
+		final Path remoteLib = new Path(miniDFSCluster.getFileSystem().getUri().toString() + "/flink-provided-lib");
+		miniDFSCluster.getFileSystem().copyFromLocalFile(new Path(flinkLibFolder.toURI()), remoteLib);
+		miniDFSCluster.getFileSystem().setPermission(remoteLib, new FsPermission("755"));
 
-		final List<String> sharedLibDirs = Collections.singletonList(tmpFlinkReleaseBinary.getAbsoluteFile().toString());
 		final Configuration flinkConfig = createDefaultConfiguration(YarnConfigOptions.UserJarInclusion.DISABLED);
-		flinkConfig.set(YarnConfigOptions.PROVIDED_LIB_DIRS, sharedLibDirs);
-
-		runTest(() -> deployPerJob(flinkConfig, getTestingJobGraph()));
+		flinkConfig.set(YarnConfigOptions.PROVIDED_LIB_DIRS, Collections.singletonList(remoteLib.toString()));
+		runTest(() -> deployPerJob(flinkConfig, getTestingJobGraph(), false));
 	}
 
-	private void deployPerJob(Configuration configuration, JobGraph jobGraph) throws Exception {
-		try (final YarnClusterDescriptor yarnClusterDescriptor = createYarnClusterDescriptor(configuration)) {
+	@Test
+	public void testPerJobWithArchive() throws Exception {
+		final Configuration flinkConfig = createDefaultConfiguration(YarnConfigOptions.UserJarInclusion.DISABLED);
+		final JobGraph archiveJobGraph = YarnTestArchiveJob.getArchiveJobGraph(tmp.newFolder(), flinkConfig);
+		runTest(() -> deployPerJob(flinkConfig, archiveJobGraph, true));
+	}
+
+	private void deployPerJob(Configuration configuration, JobGraph jobGraph, boolean withDist) throws Exception {
+		try (final YarnClusterDescriptor yarnClusterDescriptor = withDist
+				? createYarnClusterDescriptor(configuration)
+				: createYarnClusterDescriptorWithoutLibDir(configuration)) {
 
 			final int masterMemory = yarnClusterDescriptor.getFlinkConfiguration().get(JobManagerOptions.TOTAL_PROCESS_MEMORY).getMebiBytes();
 			final ClusterSpecification clusterSpecification = new ClusterSpecification.ClusterSpecificationBuilder()
@@ -116,7 +129,7 @@ public class YARNITCase extends YarnTestBase {
 				.setSlotsPerTaskManager(1)
 				.createClusterSpecification();
 
-			File testingJar = YarnTestBase.findFile("..", new YarnTestUtils.TestJarFinder("flink-yarn-tests"));
+			File testingJar = TestUtils.findFile("..", new TestUtils.TestJarFinder("flink-yarn-tests"));
 
 			jobGraph.addJar(new org.apache.flink.core.fs.Path(testingJar.toURI()));
 			try (ClusterClient<ApplicationId> clusterClient = yarnClusterDescriptor
@@ -125,6 +138,12 @@ public class YARNITCase extends YarnTestBase {
 							jobGraph,
 							false)
 					.getClusterClient()) {
+
+				for (DistributedCache.DistributedCacheEntry entry : jobGraph.getUserArtifacts().values()) {
+					assertTrue(
+						String.format("The user artifacts(%s) should be remote or uploaded to remote filesystem.", entry.filePath),
+						Utils.isRemotePath(entry.filePath));
+				}
 
 				ApplicationId applicationId = clusterClient.getClusterId();
 

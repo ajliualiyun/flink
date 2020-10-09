@@ -23,7 +23,6 @@ import org.apache.flink.api.scala._
 import org.apache.flink.streaming.api.datastream.DataStream
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
 import org.apache.flink.table.api._
-import org.apache.flink.table.api.scala._
 import org.apache.flink.table.data.RowData
 import org.apache.flink.table.descriptors.ConnectorDescriptorValidator.CONNECTOR_TYPE
 import org.apache.flink.table.descriptors.{CustomConnectorDescriptor, DescriptorProperties, Schema}
@@ -34,10 +33,11 @@ import org.apache.flink.table.planner.utils.TableTestBase
 import org.apache.flink.table.sources._
 import org.apache.flink.table.types.DataType
 import org.apache.flink.table.utils.EncodingUtils
+
 import org.junit.Assert.{assertTrue, fail}
 import org.junit.runner.RunWith
 import org.junit.runners.Parameterized
-import org.junit.{Before, Test}
+import org.junit.{Assume, Before, Test}
 
 import _root_.java.lang.{Boolean => JBoolean}
 import _root_.java.sql.Timestamp
@@ -73,6 +73,19 @@ class LookupJoinTest(legacyTableSource: Boolean) extends TableTestBase with Seri
           |  `age` INT
           |) WITH (
           |  'connector' = 'values'
+          |)
+          |""".stripMargin)
+
+      util.addTable(
+        """
+          |CREATE TABLE LookupTableWithComputedColumn (
+          |  `id` INT,
+          |  `name` STRING,
+          |  `age` INT,
+          |  `nominal_age` as age + 1
+          |) WITH (
+          |  'connector' = 'values',
+          |  'bounded' = 'true'
           |)
           |""".stripMargin)
     }
@@ -415,6 +428,50 @@ class LookupJoinTest(legacyTableSource: Boolean) extends TableTestBase with Seri
     util.verifyPlan(sql)
   }
 
+  @Test
+  def testJoinTemporalTableWithUdfEqualFilter(): Unit = {
+    val sql =
+      """
+        |SELECT
+        |  T.a, T.b, T.c, D.name
+        |FROM
+        |  MyTable AS T JOIN LookupTable FOR SYSTEM_TIME AS OF T.proctime AS D ON T.a = D.id
+        |WHERE CONCAT('Hello-', D.name) = 'Hello-Jark'
+      """.stripMargin
+
+    util.verifyPlan(sql)
+  }
+
+  @Test
+  def testJoinTemporalTableWithComputedColumn(): Unit = {
+    //Computed column do not support in legacyTableSource.
+    Assume.assumeFalse(legacyTableSource)
+    val sql =
+      """
+        |SELECT
+        |  T.a, T.b, T.c, D.name, D.age, D.nominal_age
+        |FROM
+        |  MyTable AS T JOIN LookupTableWithComputedColumn FOR SYSTEM_TIME AS OF T.proctime AS D
+        |  ON T.a = D.id
+        |""".stripMargin
+    util.verifyPlan(sql)
+  }
+
+  @Test
+  def testJoinTemporalTableWithComputedColumnAndPushDown(): Unit = {
+    //Computed column do not support in legacyTableSource.
+    Assume.assumeFalse(legacyTableSource)
+    val sql =
+      """
+        |SELECT
+        |  T.a, T.b, T.c, D.name, D.age, D.nominal_age
+        |FROM
+        |  MyTable AS T JOIN LookupTableWithComputedColumn FOR SYSTEM_TIME AS OF T.proctime AS D
+        |  ON T.a = D.id and D.nominal_age > 12
+        |""".stripMargin
+    util.verifyPlan(sql)
+  }
+
   // ==========================================================================================
 
   private def createLookupTable(tableName: String, lookupFunction: UserDefinedFunction): Unit = {
@@ -470,7 +527,7 @@ class LookupJoinTest(legacyTableSource: Boolean) extends TableTestBase with Seri
   }
 
   private def verifyTranslationSuccess(sql: String): Unit = {
-    util.tableEnv.explain(util.tableEnv.sqlQuery(sql))
+    util.tableEnv.sqlQuery(sql).explain()
   }
 }
 

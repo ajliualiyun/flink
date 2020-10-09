@@ -19,7 +19,6 @@
 package org.apache.flink.streaming.runtime.tasks;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.operators.SourceOperator;
@@ -29,10 +28,12 @@ import org.apache.flink.streaming.runtime.io.PushingAsyncDataInput.DataOutput;
 import org.apache.flink.streaming.runtime.io.StreamOneInputProcessor;
 import org.apache.flink.streaming.runtime.io.StreamTaskInput;
 import org.apache.flink.streaming.runtime.io.StreamTaskSourceInput;
+import org.apache.flink.streaming.runtime.metrics.WatermarkGauge;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.streamstatus.StreamStatus;
 import org.apache.flink.streaming.runtime.streamstatus.StreamStatusMaintainer;
+
+import javax.annotation.Nullable;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -48,10 +49,15 @@ public class SourceOperatorStreamTask<T> extends StreamTask<T, SourceOperator<T,
 
 	@Override
 	public void init() {
-		StreamTaskInput<T> input = new StreamTaskSourceInput<>(headOperator);
-		DataOutput<T> output = new StreamTaskSourceOutput<>(
-			operatorChain.getChainEntryPoint(),
-			getStreamStatusMaintainer());
+		StreamTaskInput<T> input = new StreamTaskSourceInput<>(mainOperator, 0);
+		/**
+		 * {@link SourceOperatorStreamTask} doesn't have any inputs, so there is no need for
+		 * {@link WatermarkGauge} on the input.
+		 */
+		DataOutput<T> output = new AsyncDataOutputToOutput<>(
+			operatorChain.getMainOperatorOutput(),
+			getStreamStatusMaintainer(),
+			null);
 
 		inputProcessor = new StreamOneInputProcessor<>(
 			input,
@@ -60,19 +66,21 @@ public class SourceOperatorStreamTask<T> extends StreamTask<T, SourceOperator<T,
 	}
 
 	/**
-	 * Implementation of {@link DataOutput} that wraps a specific {@link Output} to emit
-	 * stream elements for {@link SourceOperator}.
+	 * Implementation of {@link DataOutput} that wraps a specific {@link Output}.
 	 */
-	private static class StreamTaskSourceOutput<T> extends AbstractDataOutput<T> implements SourceOutput<T> {
+	public static class AsyncDataOutputToOutput<T> extends AbstractDataOutput<T> {
 
 		private final Output<StreamRecord<T>> output;
+		@Nullable private final WatermarkGauge inputWatermarkGauge;
 
-		StreamTaskSourceOutput(
+		public AsyncDataOutputToOutput(
 				Output<StreamRecord<T>> output,
-				StreamStatusMaintainer streamStatusMaintainer) {
+				StreamStatusMaintainer streamStatusMaintainer,
+				@Nullable WatermarkGauge inputWatermarkGauge) {
 			super(streamStatusMaintainer);
 
 			this.output = checkNotNull(output);
+			this.inputWatermarkGauge = inputWatermarkGauge;
 		}
 
 		@Override
@@ -87,29 +95,10 @@ public class SourceOperatorStreamTask<T> extends StreamTask<T, SourceOperator<T,
 
 		@Override
 		public void emitWatermark(Watermark watermark) {
+			if (inputWatermarkGauge != null) {
+				inputWatermarkGauge.setCurrentWatermark(watermark.getTimestamp());
+			}
 			output.emitWatermark(watermark);
-		}
-
-		// ------------------- methods from SourceOutput -------------
-
-		@Override
-		public void collect(T record) throws Exception {
-			output.collect(new StreamRecord<>(record));
-		}
-
-		@Override
-		public void collect(T record, long timestamp) throws Exception {
-			output.collect(new StreamRecord<>(record, timestamp));
-		}
-
-		@Override
-		public void emitWatermark(org.apache.flink.api.common.eventtime.Watermark watermark) {
-			output.emitWatermark(new Watermark(watermark.getTimestamp()));
-		}
-
-		@Override
-		public void markIdle() {
-			emitStreamStatus(StreamStatus.IDLE);
 		}
 	}
 }

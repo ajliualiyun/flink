@@ -22,10 +22,12 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateReader;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateReader.ReadResult;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 
 import org.slf4j.Logger;
@@ -39,13 +41,14 @@ import java.util.ArrayDeque;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * An input channel reads recovered state from previous unaligned checkpoint snapshots
  * via {@link ChannelStateReader}.
  */
-public abstract class RecoveredInputChannel extends InputChannel {
+public abstract class RecoveredInputChannel extends InputChannel implements ChannelStateHolder {
 
 	private static final Logger LOG = LoggerFactory.getLogger(RecoveredInputChannel.class);
 
@@ -56,6 +59,14 @@ public abstract class RecoveredInputChannel extends InputChannel {
 	@GuardedBy("receivedBuffers")
 	private boolean isReleased;
 
+	protected ChannelStateWriter channelStateWriter;
+
+	/** The buffer number of recovered buffers. Starts at MIN_VALUE to have no collisions with actual buffer numbers. */
+	private int sequenceNumber = Integer.MIN_VALUE;
+
+	protected final int networkBuffersPerChannel;
+	private boolean exclusiveBuffersAssigned;
+
 	RecoveredInputChannel(
 			SingleInputGate inputGate,
 			int channelIndex,
@@ -63,10 +74,18 @@ public abstract class RecoveredInputChannel extends InputChannel {
 			int initialBackoff,
 			int maxBackoff,
 			Counter numBytesIn,
-			Counter numBuffersIn) {
+			Counter numBuffersIn,
+			int networkBuffersPerChannel) {
 		super(inputGate, channelIndex, partitionId, initialBackoff, maxBackoff, numBytesIn, numBuffersIn);
 
 		bufferManager = new BufferManager(inputGate.getMemorySegmentProvider(), this, 0);
+		this.networkBuffersPerChannel = networkBuffersPerChannel;
+	}
+
+	@Override
+	public void setChannelStateWriter(ChannelStateWriter channelStateWriter) {
+		checkState(this.channelStateWriter == null, "Already initialized");
+		this.channelStateWriter = checkNotNull(channelStateWriter);
 	}
 
 	public abstract InputChannel toInputChannel() throws IOException;
@@ -127,7 +146,7 @@ public abstract class RecoveredInputChannel extends InputChannel {
 	}
 
 	private void finishReadRecoveredState() throws IOException {
-		onRecoveredStateBuffer(EventSerializer.toBuffer(EndOfChannelStateEvent.INSTANCE));
+		onRecoveredStateBuffer(EventSerializer.toBuffer(EndOfChannelStateEvent.INSTANCE, false));
 		bufferManager.releaseFloatingBuffers();
 		LOG.debug("{}/{} finished recovering input.", inputGate.getOwningTaskName(), channelInfo);
 	}
@@ -135,12 +154,12 @@ public abstract class RecoveredInputChannel extends InputChannel {
 	@Nullable
 	private BufferAndAvailability getNextRecoveredStateBuffer() throws IOException {
 		final Buffer next;
-		final boolean moreAvailable;
+		final Buffer.DataType nextDataType;
 
 		synchronized (receivedBuffers) {
 			checkState(!isReleased, "Trying to read from released RecoveredInputChannel");
 			next = receivedBuffers.poll();
-			moreAvailable = !receivedBuffers.isEmpty();
+			nextDataType = peekDataTypeUnsafe();
 		}
 
 		if (next == null) {
@@ -149,7 +168,7 @@ public abstract class RecoveredInputChannel extends InputChannel {
 			stateConsumedFuture.complete(null);
 			return null;
 		} else {
-			return new BufferAndAvailability(next, moreAvailable, 0);
+			return new BufferAndAvailability(next, nextDataType, 0, sequenceNumber++);
 		}
 	}
 
@@ -167,6 +186,13 @@ public abstract class RecoveredInputChannel extends InputChannel {
 	Optional<BufferAndAvailability> getNextBuffer() throws IOException {
 		checkError();
 		return Optional.ofNullable(getNextRecoveredStateBuffer());
+	}
+
+	private Buffer.DataType peekDataTypeUnsafe() {
+		assert Thread.holdsLock(receivedBuffers);
+
+		final Buffer first = receivedBuffers.peek();
+		return first != null ? first.getDataType() : Buffer.DataType.NONE;
 	}
 
 	@Override
@@ -214,5 +240,12 @@ public abstract class RecoveredInputChannel extends InputChannel {
 		synchronized (receivedBuffers) {
 			return receivedBuffers.size();
 		}
+	}
+
+	void assignExclusiveSegments() throws IOException {
+		checkState(!exclusiveBuffersAssigned, "Exclusive buffers should be assigned only once.");
+
+		bufferManager.requestExclusiveBuffers(networkBuffersPerChannel);
+		exclusiveBuffersAssigned = true;
 	}
 }

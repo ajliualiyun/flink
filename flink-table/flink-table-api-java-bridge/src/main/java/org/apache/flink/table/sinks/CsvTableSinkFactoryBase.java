@@ -76,9 +76,9 @@ public abstract class CsvTableSinkFactoryBase implements TableFactory {
 		// connector
 		properties.add(CONNECTOR_PATH);
 		// format
-		properties.add(FORMAT_FIELDS + ".#." + DescriptorProperties.TABLE_SCHEMA_TYPE);
-		properties.add(FORMAT_FIELDS + ".#." + DescriptorProperties.TABLE_SCHEMA_DATA_TYPE);
-		properties.add(FORMAT_FIELDS + ".#." + DescriptorProperties.TABLE_SCHEMA_NAME);
+		properties.add(FORMAT_FIELDS + ".#." + DescriptorProperties.TYPE);
+		properties.add(FORMAT_FIELDS + ".#." + DescriptorProperties.DATA_TYPE);
+		properties.add(FORMAT_FIELDS + ".#." + DescriptorProperties.NAME);
 		properties.add(FormatDescriptorValidator.FORMAT_DERIVE_SCHEMA);
 		properties.add(FORMAT_FIELD_DELIMITER);
 		properties.add(CONNECTOR_PATH);
@@ -86,10 +86,10 @@ public abstract class CsvTableSinkFactoryBase implements TableFactory {
 		properties.add(FORMAT_NUM_FILES);
 
 		// schema
-		properties.add(SCHEMA + ".#." + DescriptorProperties.TABLE_SCHEMA_TYPE);
-		properties.add(SCHEMA + ".#." + DescriptorProperties.TABLE_SCHEMA_DATA_TYPE);
-		properties.add(SCHEMA + ".#." + DescriptorProperties.TABLE_SCHEMA_NAME);
-		properties.add(SCHEMA + ".#." + DescriptorProperties.TABLE_SCHEMA_EXPR);
+		properties.add(SCHEMA + ".#." + DescriptorProperties.TYPE);
+		properties.add(SCHEMA + ".#." + DescriptorProperties.DATA_TYPE);
+		properties.add(SCHEMA + ".#." + DescriptorProperties.NAME);
+		properties.add(SCHEMA + ".#." + DescriptorProperties.EXPR);
 		// schema watermark
 		properties.add(SCHEMA + "." + DescriptorProperties.WATERMARK + ".*");
 		return properties;
@@ -125,9 +125,9 @@ public abstract class CsvTableSinkFactoryBase implements TableFactory {
 
 		String path = params.getString(CONNECTOR_PATH);
 		String fieldDelimiter = params.getOptionalString(FORMAT_FIELD_DELIMITER).orElse(",");
-		Optional<String> writeModeParm = params.getOptionalString(FORMAT_WRITE_MODE);
+		Optional<String> writeModeParam = params.getOptionalString(FORMAT_WRITE_MODE);
 		FileSystem.WriteMode writeMode =
-				(writeModeParm.isPresent()) ? FileSystem.WriteMode.valueOf(writeModeParm.get()) : null;
+				(writeModeParam.isPresent()) ? FileSystem.WriteMode.valueOf(writeModeParam.get()) : null;
 		int numFiles = params.getOptionalInt(FORMAT_NUM_FILES).orElse(-1);
 
 		// bridge to java.sql.Timestamp/Time/Date

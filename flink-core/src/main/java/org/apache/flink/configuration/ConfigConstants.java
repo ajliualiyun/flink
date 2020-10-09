@@ -383,7 +383,9 @@ public final class ConfigConstants {
 
 	/**
 	 * Whether to use the LargeRecordHandler when spilling.
+	 * @deprecated use {@link AlgorithmOptions#USE_LARGE_RECORDS_HANDLER}
 	 */
+	@Deprecated
 	public static final String USE_LARGE_RECORD_HANDLER_KEY = "taskmanager.runtime.large-record-handler";
 
 
@@ -939,7 +941,7 @@ public final class ConfigConstants {
 	/**
 	 * Timeout for all blocking calls on the client side.
 	 *
-	 * @deprecated Use {@link AkkaOptions#CLIENT_TIMEOUT} instead.
+	 * @deprecated Use {@code ClientOptions#CLIENT_TIMEOUT} instead.
 	 */
 	@Deprecated
 	public static final String AKKA_CLIENT_TIMEOUT = "akka.client.timeout";
@@ -1517,7 +1519,10 @@ public final class ConfigConstants {
 
 	/**
 	 * Whether to use the LargeRecordHandler when spilling.
+	 *
+	 * @deprecated use {@link AlgorithmOptions#USE_LARGE_RECORDS_HANDLER} instead
 	 */
+	@Deprecated
 	public static final boolean DEFAULT_USE_LARGE_RECORD_HANDLER = false;
 
 
@@ -1787,7 +1792,7 @@ public final class ConfigConstants {
 	public static final String DEFAULT_AKKA_LOOKUP_TIMEOUT = "10 s";
 
 	/**
-	 * @deprecated Use {@link AkkaOptions#CLIENT_TIMEOUT} instead.
+	 * @deprecated Use {@code ClientOptions#CLIENT_TIMEOUT} instead.
 	 */
 	@Deprecated
 	public static final String DEFAULT_AKKA_CLIENT_TIMEOUT = "60 s";

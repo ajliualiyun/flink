@@ -22,9 +22,9 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.dag.Pipeline;
+import org.apache.flink.client.cli.ClientOptions;
 import org.apache.flink.client.deployment.executors.PipelineExecutorUtils;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.configuration.PipelineOptionsInternal;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.execution.PipelineExecutor;
@@ -33,11 +33,13 @@ import org.apache.flink.runtime.client.ClientUtils;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.util.FlinkException;
+import org.apache.flink.util.function.FunctionUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
+import java.net.MalformedURLException;
 import java.util.Collection;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -81,7 +83,7 @@ public class EmbeddedExecutor implements PipelineExecutor {
 	}
 
 	@Override
-	public CompletableFuture<JobClient> execute(final Pipeline pipeline, final Configuration configuration) {
+	public CompletableFuture<JobClient> execute(final Pipeline pipeline, final Configuration configuration, ClassLoader userCodeClassloader) throws MalformedURLException {
 		checkNotNull(pipeline);
 		checkNotNull(configuration);
 
@@ -90,19 +92,19 @@ public class EmbeddedExecutor implements PipelineExecutor {
 				.map(JobID::fromHexString);
 
 		if (optJobId.isPresent() && submittedJobIds.contains(optJobId.get())) {
-			return getJobClientFuture(optJobId.get());
+			return getJobClientFuture(optJobId.get(), userCodeClassloader);
 		}
 
-		return submitAndGetJobClientFuture(pipeline, configuration);
+		return submitAndGetJobClientFuture(pipeline, configuration, userCodeClassloader);
 	}
 
-	private CompletableFuture<JobClient> getJobClientFuture(final JobID jobId) {
+	private CompletableFuture<JobClient> getJobClientFuture(final JobID jobId, final ClassLoader userCodeClassloader) {
 		LOG.info("Job {} was recovered successfully.", jobId);
-		return CompletableFuture.completedFuture(jobClientCreator.getJobClient(jobId));
+		return CompletableFuture.completedFuture(jobClientCreator.getJobClient(jobId, userCodeClassloader));
 	}
 
-	private CompletableFuture<JobClient> submitAndGetJobClientFuture(final Pipeline pipeline, final Configuration configuration) {
-		final Time timeout = Time.milliseconds(configuration.get(ExecutionOptions.EMBEDDED_RPC_TIMEOUT).toMillis());
+	private CompletableFuture<JobClient> submitAndGetJobClientFuture(final Pipeline pipeline, final Configuration configuration, final ClassLoader userCodeClassloader) throws MalformedURLException {
+		final Time timeout = Time.milliseconds(configuration.get(ClientOptions.CLIENT_TIMEOUT).toMillis());
 
 		final JobGraph jobGraph = PipelineExecutorUtils.getJobGraph(pipeline, configuration);
 		final JobID actualJobId = jobGraph.getJobID();
@@ -121,7 +123,14 @@ public class EmbeddedExecutor implements PipelineExecutor {
 				timeout);
 
 		return jobSubmissionFuture
-				.thenApplyAsync(jobID -> jobClientCreator.getJobClient(actualJobId));
+				.thenApplyAsync(FunctionUtils.uncheckedFunction(jobId -> {
+					org.apache.flink.client.ClientUtils.waitUntilJobInitializationFinished(
+						() -> dispatcherGateway.requestJobStatus(jobId, timeout).get(),
+						() -> dispatcherGateway.requestJobResult(jobId, timeout).get(),
+						userCodeClassloader);
+					return jobId;
+				}))
+				.thenApplyAsync(jobID -> jobClientCreator.getJobClient(actualJobId, userCodeClassloader));
 	}
 
 	private static CompletableFuture<JobID> submitJob(

@@ -35,6 +35,7 @@ import org.apache.flink.runtime.execution.librarycache.TestingClassLoaderLease;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.JobInformation;
 import org.apache.flink.runtime.executiongraph.TaskInformation;
+import org.apache.flink.runtime.externalresource.ExternalResourceInfoProvider;
 import org.apache.flink.runtime.filecache.FileCache;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
 import org.apache.flink.runtime.io.network.NettyShuffleEnvironmentBuilder;
@@ -56,6 +57,7 @@ import org.apache.flink.runtime.taskexecutor.TestGlobalAggregateManager;
 import org.apache.flink.runtime.util.TestingTaskManagerRuntimeInfo;
 import org.apache.flink.util.SerializedValue;
 import org.apache.flink.util.TestLogger;
+import org.apache.flink.runtime.util.TestingUserCodeClassLoader;
 
 import org.junit.After;
 import org.junit.Before;
@@ -158,7 +160,9 @@ public class TaskAsyncCallTest extends TestLogger {
 
 	private Task createTask(Class<? extends AbstractInvokable> invokableClass) throws Exception {
 		final TestingClassLoaderLease classLoaderHandle = TestingClassLoaderLease.newBuilder()
-			.setGetOrResolveClassLoaderFunction((permanentBlobKeys, urls) -> new TestUserCodeClassLoader())
+			.setGetOrResolveClassLoaderFunction((permanentBlobKeys, urls) -> TestingUserCodeClassLoader.newBuilder()
+				.setClassLoader(new TestUserCodeClassLoader())
+				.build())
 			.build();
 
 		ResultPartitionConsumableNotifier consumableNotifier = new NoOpResultPartitionConsumableNotifier();
@@ -198,6 +202,7 @@ public class TaskAsyncCallTest extends TestLogger {
 			new KvStateService(new KvStateRegistry(), null, null),
 			mock(BroadcastVariableManager.class),
 			new TaskEventDispatcher(),
+			ExternalResourceInfoProvider.NO_EXTERNAL_RESOURCES,
 			new TestTaskStateManager(),
 			mock(TaskManagerActions.class),
 			mock(InputSplitProvider.class),

@@ -25,8 +25,9 @@ import org.apache.flink.streaming.api.TimeCharacteristic
 import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks
 import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
 import org.apache.flink.streaming.api.watermark.Watermark
-import org.apache.flink.table.api.scala._
-import org.apache.flink.table.api.{EnvironmentSettings, TableSchema, Tumble, Types}
+import org.apache.flink.table.api._
+import org.apache.flink.table.api.bridge.scala._
+import org.apache.flink.table.api.internal.TableEnvironmentInternal
 import org.apache.flink.table.expressions.{ExpressionParser, TimeIntervalUnit}
 import org.apache.flink.table.plan.TimeIndicatorConversionTest.TableFunc
 import org.apache.flink.table.runtime.stream.TimeAttributesITCase.{AtomicTimestampWithEqualWatermark, TestPojo, TimestampWithEqualWatermark, TimestampWithEqualWatermarkPojo}
@@ -61,7 +62,6 @@ class TimeAttributesITCase extends AbstractTestBase {
     (16L, 4, 4d, 4f, new BigDecimal("4"), "Hello world"))
 
   val env: StreamExecutionEnvironment = StreamExecutionEnvironment.getExecutionEnvironment
-  env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
   val tEnv: StreamTableEnvironment = StreamTableEnvironment.create(
     env,
     EnvironmentSettings.newInstance().useOldPlanner().build())
@@ -176,7 +176,7 @@ class TimeAttributesITCase extends AbstractTestBase {
   def testTableSink(): Unit = {
     MemoryTableSourceSinkUtil.clear()
 
-    tEnv.registerTableSink(
+    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
       "testSink",
       (new MemoryTableSourceSinkUtil.UnsafeMemoryAppendTableSink).configure(
         Array[String]("rowtime", "floorDay", "ceilDay"),
@@ -549,7 +549,8 @@ class TimeAttributesITCase extends AbstractTestBase {
       fieldNames)
 
     val tableSource = new TestTableSourceWithTime(schema, rowType, rows, "rowtime", "proctime")
-    tEnv.registerTableSource("testTable", tableSource)
+    tEnv.asInstanceOf[TableEnvironmentInternal]
+      .registerTableSourceInternal("testTable", tableSource)
 
     val result = tEnv
       .scan("testTable")
@@ -596,7 +597,6 @@ class TimeAttributesITCase extends AbstractTestBase {
   def testMaterializedRowtimeFilter(): Unit = {
     val env = StreamExecutionEnvironment.getExecutionEnvironment
     env.setParallelism(1)
-    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
     val tEnv = StreamTableEnvironment.create(
       env, EnvironmentSettings.newInstance().useOldPlanner().build())
 

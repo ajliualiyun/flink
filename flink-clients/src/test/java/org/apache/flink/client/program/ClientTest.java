@@ -21,7 +21,6 @@ package org.apache.flink.client.program;
 import org.apache.flink.api.common.InvalidProgramException;
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.JobSubmissionResult;
 import org.apache.flink.api.common.Plan;
 import org.apache.flink.api.common.ProgramDescription;
 import org.apache.flink.api.common.functions.MapFunction;
@@ -53,7 +52,6 @@ import org.apache.flink.optimizer.plandump.PlanJSONDumpGenerator;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.testutils.MiniClusterResource;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
-import org.apache.flink.testutils.junit.category.AlsoRunWithLegacyScheduler;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.NetUtils;
 import org.apache.flink.util.TestLogger;
@@ -61,7 +59,6 @@ import org.apache.flink.util.TestLogger;
 import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Test;
-import org.junit.experimental.categories.Category;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
@@ -83,7 +80,6 @@ import static org.mockito.Mockito.when;
 /**
  * Simple and maybe stupid test to check the {@link ClusterClient} class.
  */
-@Category(AlsoRunWithLegacyScheduler.class)
 public class ClientTest extends TestLogger {
 
 	@ClassRule
@@ -230,8 +226,7 @@ public class ClientTest extends TestLogger {
 		jobGraph.addJars(Collections.emptyList());
 		jobGraph.setClasspaths(Collections.emptyList());
 
-		JobSubmissionResult result = ClientUtils.submitJob(clusterClient, jobGraph);
-		assertNotNull(result);
+		assertNotNull(clusterClient.submitJob(jobGraph).get());
 	}
 
 	/**
@@ -345,7 +340,7 @@ public class ClientTest extends TestLogger {
 				env.fromElements(1, 2).output(new DiscardingOutputFormat<>());
 				JobClient jc = env.executeAsync();
 
-				jc.getJobExecutionResult(TestMultiExecute.class.getClassLoader());
+				jc.getJobExecutionResult();
 			}
 		}
 	}
@@ -425,7 +420,7 @@ public class ClientTest extends TestLogger {
 
 				@Override
 				public PipelineExecutor getExecutor(@Nonnull Configuration configuration) {
-					return (pipeline, config) -> {
+					return (pipeline, config, classLoader) -> {
 						final int parallelism = config.getInteger(CoreOptions.DEFAULT_PARALLELISM);
 						final JobGraph jobGraph = FlinkPipelineTranslationUtil.getJobGraph(plan, config, parallelism);
 
@@ -433,8 +428,8 @@ public class ClientTest extends TestLogger {
 						jobGraph.addJars(accessor.getJars());
 						jobGraph.setClasspaths(accessor.getClasspaths());
 
-						final JobID jobID = ClientUtils.submitJob(clusterClient, jobGraph).getJobID();
-						return CompletableFuture.completedFuture(new ClusterClientJobClientAdapter<>(() -> clusterClient, jobID));
+						final JobID jobID = clusterClient.submitJob(jobGraph).get();
+						return CompletableFuture.completedFuture(new ClusterClientJobClientAdapter<>(() -> clusterClient, jobID, classLoader));
 					};
 				}
 			};

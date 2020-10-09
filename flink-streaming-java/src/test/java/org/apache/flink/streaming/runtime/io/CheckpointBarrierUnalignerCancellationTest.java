@@ -20,13 +20,16 @@ package org.apache.flink.streaming.runtime.io;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
-import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.event.RuntimeEvent;
 import org.apache.flink.runtime.io.network.api.CancelCheckpointMarker;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
+import org.apache.flink.runtime.io.network.partition.consumer.InputChannelBuilder;
+import org.apache.flink.runtime.io.network.partition.consumer.SingleInputGate;
+import org.apache.flink.runtime.io.network.partition.consumer.SingleInputGateBuilder;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.operators.testutils.DummyEnvironment;
-import org.apache.flink.util.function.ThrowingRunnable;
+import org.apache.flink.streaming.runtime.tasks.TestSubtaskCheckpointCoordinator;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -68,22 +71,27 @@ public class CheckpointBarrierUnalignerCancellationTest {
 				new Object[]{true, false, Arrays.asList(checkpoint(10), checkpoint(20)), 1, 0},
 				new Object[]{true, true, Arrays.asList(checkpoint(10), checkpoint(20)), 2, 0},
 				new Object[]{true, false, Arrays.asList(checkpoint(20), checkpoint(10)), 1, 0},
-				new Object[]{true, true, Arrays.asList(checkpoint(10), cancel(10)), 1, 0},
+				new Object[]{true, false, Arrays.asList(checkpoint(10), cancel(10)), 1, 0},
+				new Object[]{true, true, Arrays.asList(checkpoint(10), cancel(10)), 2, 0},
 				new Object[]{true, true, Arrays.asList(checkpoint(10), cancel(20)), 1, 0},
-				new Object[]{true, true, Arrays.asList(checkpoint(20), cancel(10)), 1, 0},
+				new Object[]{true, false, Arrays.asList(checkpoint(20), cancel(10)), 1, 0},
 		};
 	}
 
 	@Test
 	public void test() throws Exception {
 		TestInvokable invokable = new TestInvokable();
-		CheckpointBarrierUnaligner unaligner = new CheckpointBarrierUnaligner(new int[]{numChannels}, ChannelStateWriter.NO_OP, "test", invokable);
+		final SingleInputGate inputGate = new SingleInputGateBuilder()
+			.setNumberOfChannels(numChannels)
+			.setChannelFactory(InputChannelBuilder::buildLocalChannel)
+			.build();
+		CheckpointBarrierUnaligner unaligner = new CheckpointBarrierUnaligner(TestSubtaskCheckpointCoordinator.INSTANCE, "test", invokable, inputGate);
 
 		for (RuntimeEvent e : events) {
 			if (e instanceof CancelCheckpointMarker) {
 				unaligner.processCancellationBarrier((CancelCheckpointMarker) e);
 			} else if (e instanceof CheckpointBarrier) {
-				unaligner.processBarrier((CheckpointBarrier) e, channel);
+				unaligner.processBarrier((CheckpointBarrier) e, new InputChannelInfo(0, channel));
 			} else {
 				throw new IllegalArgumentException("unexpected event type: " + e);
 			}
@@ -121,18 +129,6 @@ public class CheckpointBarrierUnalignerCancellationTest {
 		@Override
 		public void abortCheckpointOnBarrier(long checkpointId, Throwable cause) {
 			checkpointAborted = true;
-		}
-
-		@Override
-		public <E extends Exception> void executeInTaskThread(
-				ThrowingRunnable<E> runnable,
-				String descriptionFormat,
-				Object... descriptionArgs) {
-			try {
-				runnable.run();
-			} catch (Exception e) {
-				throw new RuntimeException(e);
-			}
 		}
 	}
 }

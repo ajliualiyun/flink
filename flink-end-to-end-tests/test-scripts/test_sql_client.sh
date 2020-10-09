@@ -60,7 +60,8 @@ for SQL_JAR in $SQL_JARS_DIR/*.jar; do
     if ! [[ $EXTRACTED_FILE = "$EXTRACTED_JAR/org/apache/flink"* ]] && \
         ! [[ $EXTRACTED_FILE = "$EXTRACTED_JAR/META-INF"* ]] && \
         ! [[ $EXTRACTED_FILE = "$EXTRACTED_JAR/LICENSE"* ]] && \
-        ! [[ $EXTRACTED_FILE = "$EXTRACTED_JAR/NOTICE"* ]] ; then
+        ! [[ $EXTRACTED_FILE = "$EXTRACTED_JAR/NOTICE"* ]] && \
+        ! [[ $EXTRACTED_FILE = "$EXTRACTED_JAR/org/apache/avro"* ]] ; then
       echo "Bad file in JAR: $EXTRACTED_FILE"
       exit 1
     fi
@@ -142,7 +143,6 @@ start_taskmanagers 2
 
 echo "Testing SQL statements..."
 
-JSON_SQL_JAR=$(find "$SQL_JARS_DIR" | grep "json" )
 KAFKA_SQL_JAR=$(find "$SQL_JARS_DIR" | grep "kafka_" )
 ELASTICSEARCH_SQL_JAR=$(find "$SQL_JARS_DIR" | grep "elasticsearch$ELASTICSEARCH_VERSION" )
 
@@ -224,7 +224,6 @@ EOF
 
 JOB_ID=$($FLINK_DIR/bin/sql-client.sh embedded \
   --jar $KAFKA_SQL_JAR \
-  --jar $JSON_SQL_JAR \
   --jar $ELASTICSEARCH_SQL_JAR \
   --jar $SQL_TOOLBOX_JAR \
   --environment $SQL_CONF \
@@ -253,7 +252,6 @@ EOF
 
 JOB_ID=$($FLINK_DIR/bin/sql-client.sh embedded \
   --jar $KAFKA_SQL_JAR \
-  --jar $JSON_SQL_JAR \
   --jar $ELASTICSEARCH_SQL_JAR \
   --jar $SQL_TOOLBOX_JAR \
   --environment $SQL_CONF \
@@ -286,7 +284,6 @@ EOF
 
 JOB_ID=$($FLINK_DIR/bin/sql-client.sh embedded \
   --jar $KAFKA_SQL_JAR \
-  --jar $JSON_SQL_JAR \
   --jar $ELASTICSEARCH_SQL_JAR \
   --jar $SQL_TOOLBOX_JAR \
   --environment $SQL_CONF \

@@ -21,10 +21,11 @@ package org.apache.flink.streaming.runtime.io;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
-import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.api.EndOfPartitionEvent;
 import org.apache.flink.runtime.io.network.api.serialization.RecordDeserializer;
 import org.apache.flink.runtime.io.network.api.serialization.RecordDeserializer.DeserializationResult;
@@ -40,7 +41,12 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 import org.apache.flink.streaming.runtime.streamstatus.StatusWatermarkValve;
 import org.apache.flink.streaming.runtime.streamstatus.StreamStatus;
 
+import javax.annotation.Nonnull;
+
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
@@ -55,7 +61,7 @@ import static org.apache.flink.util.Preconditions.checkState;
  * {@link StatusWatermarkValve} determines the {@link Watermark} from all inputs has advanced, or
  * that a {@link StreamStatus} needs to be propagated downstream to denote a status change.
  *
- * <p>Forwarding elements, watermarks, or status status elements must be protected by synchronizing
+ * <p>Forwarding elements, watermarks, or status elements must be protected by synchronizing
  * on the given lock object. This ensures that we don't call methods on a
  * {@link StreamInputProcessor} concurrently with the timer callback or other things.
  */
@@ -72,6 +78,8 @@ public final class StreamTaskNetworkInput<T> implements StreamTaskInput<T> {
 	private final StatusWatermarkValve statusWatermarkValve;
 
 	private final int inputIndex;
+
+	private final Map<InputChannelInfo, Integer> channelIndexes;
 
 	private int lastChannel = UNSPECIFIED;
 
@@ -97,6 +105,18 @@ public final class StreamTaskNetworkInput<T> implements StreamTaskInput<T> {
 
 		this.statusWatermarkValve = checkNotNull(statusWatermarkValve);
 		this.inputIndex = inputIndex;
+		this.channelIndexes = getChannelIndexes(checkpointedInputGate);
+	}
+
+	@Nonnull
+	private static Map<InputChannelInfo, Integer> getChannelIndexes(CheckpointedInputGate checkpointedInputGate) {
+		int index = 0;
+		List<InputChannelInfo> channelInfos = checkpointedInputGate.getChannelInfos();
+		Map<InputChannelInfo, Integer> channelIndexes = new HashMap<>(channelInfos.size());
+		for (InputChannelInfo channelInfo : channelInfos) {
+			channelIndexes.put(channelInfo, index++);
+		}
+		return channelIndexes;
 	}
 
 	@VisibleForTesting
@@ -113,6 +133,7 @@ public final class StreamTaskNetworkInput<T> implements StreamTaskInput<T> {
 		this.recordDeserializers = recordDeserializers;
 		this.statusWatermarkValve = statusWatermarkValve;
 		this.inputIndex = inputIndex;
+		this.channelIndexes = getChannelIndexes(checkpointedInputGate);
 	}
 
 	@Override
@@ -137,10 +158,12 @@ public final class StreamTaskNetworkInput<T> implements StreamTaskInput<T> {
 			if (bufferOrEvent.isPresent()) {
 				// return to the mailbox after receiving a checkpoint barrier to avoid processing of
 				// data after the barrier before checkpoint is performed for unaligned checkpoint mode
-				if (bufferOrEvent.get().isEvent() && bufferOrEvent.get().getEvent() instanceof CheckpointBarrier) {
+				if (bufferOrEvent.get().isBuffer()) {
+					processBuffer(bufferOrEvent.get());
+				} else {
+					processEvent(bufferOrEvent.get());
 					return InputStatus.MORE_AVAILABLE;
 				}
-				processBufferOrEvent(bufferOrEvent.get());
 			} else {
 				if (checkpointedInputGate.isFinished()) {
 					checkState(checkpointedInputGate.getAvailableFuture().isDone(), "Finished BarrierHandler should be available");
@@ -155,38 +178,35 @@ public final class StreamTaskNetworkInput<T> implements StreamTaskInput<T> {
 		if (recordOrMark.isRecord()){
 			output.emitRecord(recordOrMark.asRecord());
 		} else if (recordOrMark.isWatermark()) {
-			statusWatermarkValve.inputWatermark(recordOrMark.asWatermark(), lastChannel);
+			statusWatermarkValve.inputWatermark(recordOrMark.asWatermark(), lastChannel, output);
 		} else if (recordOrMark.isLatencyMarker()) {
 			output.emitLatencyMarker(recordOrMark.asLatencyMarker());
 		} else if (recordOrMark.isStreamStatus()) {
-			statusWatermarkValve.inputStreamStatus(recordOrMark.asStreamStatus(), lastChannel);
+			statusWatermarkValve.inputStreamStatus(recordOrMark.asStreamStatus(), lastChannel, output);
 		} else {
 			throw new UnsupportedOperationException("Unknown type of StreamElement");
 		}
 	}
 
-	private void processBufferOrEvent(BufferOrEvent bufferOrEvent) throws IOException {
-		if (bufferOrEvent.isBuffer()) {
-			lastChannel = bufferOrEvent.getChannelIndex();
-			checkState(lastChannel != StreamTaskInput.UNSPECIFIED);
-			currentRecordDeserializer = recordDeserializers[lastChannel];
-			checkState(currentRecordDeserializer != null,
-				"currentRecordDeserializer has already been released");
-
-			currentRecordDeserializer.setNextBuffer(bufferOrEvent.getBuffer());
-		}
-		else {
-			// Event received
-			final AbstractEvent event = bufferOrEvent.getEvent();
-			// TODO: with checkpointedInputGate.isFinished() we might not need to support any events on this level.
-			if (event.getClass() != EndOfPartitionEvent.class) {
-				throw new IOException("Unexpected event: " + event);
-			}
-
+	private void processEvent(BufferOrEvent bufferOrEvent) {
+		// Event received
+		final AbstractEvent event = bufferOrEvent.getEvent();
+		// TODO: with checkpointedInputGate.isFinished() we might not need to support any events on this level.
+		if (event.getClass() == EndOfPartitionEvent.class) {
 			// release the record deserializer immediately,
 			// which is very valuable in case of bounded stream
-			releaseDeserializer(bufferOrEvent.getChannelIndex());
+			releaseDeserializer(channelIndexes.get(bufferOrEvent.getChannelInfo()));
 		}
+	}
+
+	private void processBuffer(BufferOrEvent bufferOrEvent) throws IOException {
+		lastChannel = channelIndexes.get(bufferOrEvent.getChannelInfo());
+		checkState(lastChannel != StreamTaskInput.UNSPECIFIED);
+		currentRecordDeserializer = recordDeserializers[lastChannel];
+		checkState(currentRecordDeserializer != null,
+			"currentRecordDeserializer has already been released");
+
+		currentRecordDeserializer.setNextBuffer(bufferOrEvent.getBuffer());
 	}
 
 	@Override
@@ -207,17 +227,16 @@ public final class StreamTaskNetworkInput<T> implements StreamTaskInput<T> {
 			ChannelStateWriter channelStateWriter,
 			long checkpointId) throws IOException {
 		for (int channelIndex = 0; channelIndex < recordDeserializers.length; channelIndex++) {
-			final InputChannel channel = checkpointedInputGate.getChannel(channelIndex);
+			RecordDeserializer<?> deserializer = recordDeserializers[channelIndex];
+			if (deserializer != null) {
+				final InputChannel channel = checkpointedInputGate.getChannel(channelIndex);
 
-			// Assumption for retrieving buffers = one concurrent checkpoint
-			recordDeserializers[channelIndex].getUnconsumedBuffer().ifPresent(buffer ->
 				channelStateWriter.addInputData(
 					checkpointId,
 					channel.getChannelInfo(),
 					ChannelStateWriter.SEQUENCE_NUMBER_UNKNOWN,
-					buffer));
-
-			checkpointedInputGate.spillInflightBuffers(checkpointId, channelIndex, channelStateWriter);
+					deserializer.getUnconsumedBuffer());
+			}
 		}
 		return checkpointedInputGate.getAllBarriersReceivedFuture(checkpointId);
 	}

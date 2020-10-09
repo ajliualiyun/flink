@@ -82,11 +82,10 @@ class TableFactoryTest(isBatch: Boolean) extends TableTestBase {
         |insert into t2
         |select t1.a, t1.c from t1
       """.stripMargin
-    util.tableEnv.sqlUpdate(sourceDDL)
-    util.tableEnv.sqlUpdate(sinkDDL)
-    util.tableEnv.sqlUpdate(query)
+    util.tableEnv.executeSql(sourceDDL)
+    util.tableEnv.executeSql(sinkDDL)
 
-    util.tableEnv.explain(false)
+    util.tableEnv.explainSql(query)
     Assert.assertTrue(factory.hasInvokedSource)
     Assert.assertTrue(factory.hasInvokedSink)
   }

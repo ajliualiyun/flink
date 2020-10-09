@@ -22,11 +22,13 @@ import shutil
 import struct
 import tempfile
 import time
+from logging import WARN
 from threading import RLock
 
-from py4j.java_gateway import java_import, JavaGateway, GatewayParameters, CallbackServerParameters
+from py4j.java_gateway import (java_import, logger, JavaGateway, GatewayParameters,
+                               CallbackServerParameters)
 from pyflink.pyflink_gateway_server import launch_gateway_server_process
-from pyflink.util.exceptions import install_exception_handler
+from pyflink.util.exceptions import install_exception_handler, install_py4j_hooks
 
 _gateway = None
 _lock = RLock()
@@ -46,6 +48,8 @@ def get_gateway():
     global _lock
     with _lock:
         if _gateway is None:
+            # Set the level to WARN to mute the noisy INFO level logs
+            logger.level = WARN
             # if Java Gateway is already running
             if 'PYFLINK_GATEWAY_PORT' in os.environ:
                 gateway_port = int(os.environ['PYFLINK_GATEWAY_PORT'])
@@ -65,6 +69,7 @@ def get_gateway():
             # import the flink view
             import_flink_view(_gateway)
             install_exception_handler()
+            install_py4j_hooks()
             _gateway.entry_point.put("PythonFunctionFactory", PythonFunctionFactory())
             _gateway.entry_point.put("Watchdog", Watchdog())
     return _gateway
@@ -126,10 +131,12 @@ def import_flink_view(gateway):
     # Import the classes used by PyFlink
     java_import(gateway.jvm, "org.apache.flink.table.api.*")
     java_import(gateway.jvm, "org.apache.flink.table.api.java.*")
+    java_import(gateway.jvm, "org.apache.flink.table.api.bridge.java.*")
     java_import(gateway.jvm, "org.apache.flink.table.api.dataview.*")
     java_import(gateway.jvm, "org.apache.flink.table.catalog.*")
     java_import(gateway.jvm, "org.apache.flink.table.descriptors.*")
     java_import(gateway.jvm, "org.apache.flink.table.descriptors.python.*")
+    java_import(gateway.jvm, "org.apache.flink.table.expressions.*")
     java_import(gateway.jvm, "org.apache.flink.table.sources.*")
     java_import(gateway.jvm, "org.apache.flink.table.sinks.*")
     java_import(gateway.jvm, "org.apache.flink.table.sources.*")
@@ -146,6 +153,9 @@ def import_flink_view(gateway):
     java_import(gateway.jvm, "org.apache.flink.python.util.PythonDependencyUtils")
     java_import(gateway.jvm, "org.apache.flink.python.PythonOptions")
     java_import(gateway.jvm, "org.apache.flink.client.python.PythonGatewayServer")
+    java_import(gateway.jvm, "org.apache.flink.streaming.api.functions.python.*")
+    java_import(gateway.jvm, "org.apache.flink.streaming.api.operators.python.*")
+    java_import(gateway.jvm, "org.apache.flink.streaming.api.typeinfo.python.*")
 
 
 class PythonFunctionFactory(object):
@@ -155,7 +165,7 @@ class PythonFunctionFactory(object):
 
     def getPythonFunction(self, moduleName, objectName):
         udf_wrapper = getattr(importlib.import_module(moduleName), objectName)
-        return udf_wrapper._create_judf()
+        return udf_wrapper.java_user_defined_function()
 
     class Java:
         implements = ["org.apache.flink.client.python.PythonFunctionFactory"]

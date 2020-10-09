@@ -29,24 +29,22 @@ import org.apache.flink.table.api.internal.TableEnvironmentImpl
 import org.apache.flink.table.data.RowData
 import org.apache.flink.table.data.binary.BinaryRowData
 import org.apache.flink.table.data.writer.BinaryRowWriter
-import org.apache.flink.table.functions.{AggregateFunction, ScalarFunction, TableFunction}
+import org.apache.flink.table.functions.{AggregateFunction, ScalarFunction, TableFunction, UserDefinedFunction}
 import org.apache.flink.table.planner.delegation.PlannerBase
 import org.apache.flink.table.planner.factories.TestValuesTableFactory
 import org.apache.flink.table.planner.plan.stats.FlinkStatistic
 import org.apache.flink.table.planner.plan.utils.FlinkRelOptUtil
 import org.apache.flink.table.planner.runtime.utils.BatchAbstractTestBase.DEFAULT_PARALLELISM
 import org.apache.flink.table.planner.utils.{RowDataTestUtil, TableTestUtil, TestingTableEnvironment}
-import org.apache.flink.table.runtime.typeutils.RowDataTypeInfo
+import org.apache.flink.table.runtime.typeutils.InternalTypeInfo
 import org.apache.flink.table.types.logical.{BigIntType, LogicalType}
 import org.apache.flink.types.Row
-
-import org.apache.flink.shaded.guava18.com.google.common.collect.Lists
+import org.apache.flink.util.CollectionUtil
 
 import org.apache.calcite.rel.RelNode
 import org.apache.calcite.runtime.CalciteContextException
 import org.apache.calcite.sql.SqlExplainLevel
 import org.apache.calcite.sql.parser.SqlParseException
-
 import org.junit.Assert._
 import org.junit.{After, Assert, Before}
 
@@ -80,7 +78,7 @@ class BatchTestBase extends BatchAbstractTestBase {
 
   @After
   def after(): Unit = {
-    TestValuesTableFactory.clearAllRegisteredData()
+    TestValuesTableFactory.clearAllData()
   }
 
   /**
@@ -296,14 +294,16 @@ class BatchTestBase extends BatchAbstractTestBase {
 
   def parseQuery(sqlQuery: String): Table = tEnv.sqlQuery(sqlQuery)
 
-  def executeQuery(table: Table): Seq[Row] = Lists.newArrayList(table.execute().collect()).asScala
+  def executeQuery(table: Table): Seq[Row] = {
+    CollectionUtil.iteratorToList(table.execute().collect()).asScala
+  }
 
   def executeQuery(sqlQuery: String): Seq[Row] = {
     val table = parseQuery(sqlQuery)
     executeQuery(table)
   }
 
-  private def prepareResult(seq: Seq[Row], isSorted: Boolean) = {
+  private def prepareResult(seq: Seq[Row], isSorted: Boolean): Seq[String] = {
     if (!isSorted) seq.map(_.toString).sortBy(s => s) else seq.map(_.toString)
   }
 
@@ -383,16 +383,35 @@ class BatchTestBase extends BatchAbstractTestBase {
       tEnv, tableName, data, typeInfo, fields, fieldNullables, Some(statistic))
   }
 
+  def registerTemporarySystemFunction(
+      name: String,
+      functionClass: Class[_ <: UserDefinedFunction])
+    : Unit = {
+    testingTableEnv.createTemporarySystemFunction(name, functionClass)
+  }
+
+  /**
+   * @deprecated Use [[registerTemporarySystemFunction()]] for the new type inference.
+   */
+  @deprecated
   def registerFunction(name: String, function: ScalarFunction): Unit = {
     testingTableEnv.registerFunction(name, function)
   }
 
+  /**
+   * @deprecated Use [[registerTemporarySystemFunction()]] for the new type inference.
+   */
+  @deprecated
   def registerFunction[T: TypeInformation, ACC: TypeInformation](
       name: String,
       f: AggregateFunction[T, ACC]): Unit = {
     testingTableEnv.registerFunction(name, f)
   }
 
+  /**
+   * @deprecated Use [[registerTemporarySystemFunction()]] for the new type inference.
+   */
+  @deprecated
   def registerFunction[T: TypeInformation](name: String, tf: TableFunction[T]): Unit = {
     testingTableEnv.registerFunction(name, tf)
   }
@@ -407,7 +426,7 @@ class BatchTestBase extends BatchAbstractTestBase {
   }
 
   def newRangeSource(start: Long, end: Long): DataStream[RowData] = {
-    val typeInfo: TypeInformation[RowData] = new RowDataTypeInfo(new BigIntType)
+    val typeInfo: TypeInformation[RowData] = InternalTypeInfo.ofFields(new BigIntType)
     val boundedStream = env.createInput(new RangeInputFormat(start, end), typeInfo)
     boundedStream.setParallelism(1)
     boundedStream

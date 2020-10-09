@@ -30,13 +30,13 @@ import org.apache.calcite.sql.`type`.SqlTypeName._
 import org.apache.calcite.sql.`type`.{BasicSqlType, MapSqlType, SqlTypeName}
 import org.apache.calcite.sql.parser.SqlParserPos
 import org.apache.calcite.util.ConversionUtil
-import org.apache.flink.api.common.typeinfo.{NothingTypeInfo, TypeInformation}
+import org.apache.flink.api.common.typeinfo.{BasicTypeInfo, NothingTypeInfo, TypeInformation}
 import org.apache.flink.api.java.typeutils.TypeExtractor
 import org.apache.flink.table.api.{DataTypes, TableException, TableSchema, ValidationException}
 import org.apache.flink.table.calcite.ExtendedRelTypeFactory
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory.toLogicalType
 import org.apache.flink.table.planner.plan.schema.{GenericRelDataType, _}
-import org.apache.flink.table.runtime.types.LogicalTypeDataTypeConverter
+import org.apache.flink.table.runtime.types.{LogicalTypeDataTypeConverter, PlannerTypeUtils}
 import org.apache.flink.table.types.inference.TypeInferenceUtil
 import org.apache.flink.table.types.logical._
 import org.apache.flink.table.typeutils.TimeIndicatorTypeInfo
@@ -97,8 +97,13 @@ class FlinkTypeFactory(typeSystem: RelDataTypeSystem)
         createSqlType(VARBINARY, t.asInstanceOf[VarBinaryType].getLength)
 
       case LogicalTypeRoot.DECIMAL =>
-        val decimalType = t.asInstanceOf[DecimalType]
-        createSqlType(DECIMAL, decimalType.getPrecision, decimalType.getScale)
+        t match {
+          case decimalType: DecimalType =>
+            createSqlType(DECIMAL, decimalType.getPrecision, decimalType.getScale)
+          case legacyType: LegacyTypeInformationType[_]
+              if legacyType.getTypeInformation == BasicTypeInfo.BIG_DEC_TYPE_INFO =>
+            createSqlType(DECIMAL, 38, 18)
+        }
 
       case LogicalTypeRoot.ROW =>
         val rowType = t.asInstanceOf[RowType]
@@ -107,6 +112,14 @@ class FlinkTypeFactory(typeSystem: RelDataTypeSystem)
           rowType.getChildren,
           // fields are not expanded in "SELECT *"
           StructKind.PEEK_FIELDS_NO_EXPAND)
+
+      case LogicalTypeRoot.STRUCTURED_TYPE =>
+        t match {
+          case structuredType: StructuredType => StructuredRelDataType.create(this, structuredType)
+          case legacyTypeInformationType: LegacyTypeInformationType[_] =>
+            createFieldTypeFromLogicalType(
+            PlannerTypeUtils.removeLegacyTypes(legacyTypeInformationType))
+        }
 
       case LogicalTypeRoot.ARRAY =>
         val arrayType = t.asInstanceOf[ArrayType]
@@ -128,6 +141,8 @@ class FlinkTypeFactory(typeSystem: RelDataTypeSystem)
             new RawRelDataType(rawType)
           case genericType: TypeInformationRawType[_] =>
             new GenericRelDataType(genericType, true, getTypeSystem)
+          case legacyType: LegacyTypeInformationType[_] =>
+            createFieldTypeFromLogicalType(PlannerTypeUtils.removeLegacyTypes(legacyType))
         }
 
       case LogicalTypeRoot.SYMBOL =>
@@ -325,6 +340,9 @@ class FlinkTypeFactory(typeSystem: RelDataTypeSystem)
       case raw: RawRelDataType =>
         raw.createWithNullability(isNullable)
 
+      case structured: StructuredRelDataType =>
+        structured.createWithNullability(isNullable)
+
       case generic: GenericRelDataType =>
         new GenericRelDataType(generic.genericType, isNullable, typeSystem)
 
@@ -519,6 +537,9 @@ object FlinkTypeFactory {
 
       case ROW if relDataType.isInstanceOf[RelRecordType] =>
         toLogicalRowType(relDataType)
+
+      case STRUCTURED if relDataType.isInstanceOf[StructuredRelDataType] =>
+        relDataType.asInstanceOf[StructuredRelDataType].getStructuredType
 
       case MULTISET => new MultisetType(toLogicalType(relDataType.getComponentType))
 

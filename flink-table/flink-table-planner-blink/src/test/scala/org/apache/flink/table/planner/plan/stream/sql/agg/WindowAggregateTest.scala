@@ -20,22 +20,22 @@ package org.apache.flink.table.planner.plan.stream.sql.agg
 
 import org.apache.flink.api.common.time.Time
 import org.apache.flink.api.scala._
-import org.apache.flink.table.api.scala._
-import org.apache.flink.table.api.{TableException, ValidationException}
+import org.apache.flink.table.api._
 import org.apache.flink.table.planner.plan.utils.JavaUserDefinedAggFunctions.WeightedAvgWithMerge
 import org.apache.flink.table.planner.plan.utils.WindowEmitStrategy.{TABLE_EXEC_EMIT_LATE_FIRE_DELAY, TABLE_EXEC_EMIT_LATE_FIRE_ENABLED}
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import org.junit.Test
+import java.time.Duration
 
+import org.junit.Test
 
 class WindowAggregateTest extends TableTestBase {
 
   private val util = streamTestUtil()
   util.addDataStream[(Int, String, Long)](
     "MyTable", 'a, 'b, 'c, 'proctime.proctime, 'rowtime.rowtime)
-  util.addFunction("weightedAvg", new WeightedAvgWithMerge)
-  util.tableEnv.sqlUpdate(
+  util.addTemporarySystemFunction("weightedAvg", classOf[WeightedAvgWithMerge])
+  util.tableEnv.executeSql(
     s"""
        |create table MyTable1 (
        |  a int,
@@ -140,6 +140,20 @@ class WindowAggregateTest extends TableTestBase {
         |    TUMBLE_END(rowtime, INTERVAL '15' MINUTE)
         |FROM MyTable
         |    GROUP BY TUMBLE(rowtime, INTERVAL '15' MINUTE)
+      """.stripMargin
+    util.verifyPlan(sql)
+  }
+
+  @Test
+  def testWindowGroupByOnConstant(): Unit = {
+    val sql =
+      """
+        |SELECT COUNT(*),
+        |    weightedAvg(c, a) AS wAvg,
+        |    TUMBLE_START(rowtime, INTERVAL '15' MINUTE),
+        |    TUMBLE_END(rowtime, INTERVAL '15' MINUTE)
+        |FROM MyTable
+        |    GROUP BY 'a', TUMBLE(rowtime, INTERVAL '15' MINUTE)
       """.stripMargin
     util.verifyPlan(sql)
   }
@@ -420,7 +434,7 @@ class WindowAggregateTest extends TableTestBase {
   @Test
   def testWindowAggregateWithLateFire(): Unit = {
     util.conf.getConfiguration.setBoolean(TABLE_EXEC_EMIT_LATE_FIRE_ENABLED, true)
-    util.conf.getConfiguration.setString(TABLE_EXEC_EMIT_LATE_FIRE_DELAY, "5s")
+    util.conf.getConfiguration.set(TABLE_EXEC_EMIT_LATE_FIRE_DELAY, Duration.ofSeconds(5))
     util.conf.setIdleStateRetentionTime(Time.hours(1), Time.hours(2))
     val sql =
       """
@@ -428,7 +442,7 @@ class WindowAggregateTest extends TableTestBase {
         |FROM MyTable
         |GROUP BY TUMBLE(`rowtime`, INTERVAL '1' SECOND)
         |""".stripMargin
-    util.verifyPlanWithTrait(sql)
+    util.verifyPlan(sql, ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -440,6 +454,6 @@ class WindowAggregateTest extends TableTestBase {
         |FROM MyTable
         |GROUP BY TUMBLE(`rowtime`, INTERVAL '1' SECOND)
         |""".stripMargin
-    util.verifyPlanWithTrait(sql)
+    util.verifyPlan(sql, ExplainDetail.CHANGELOG_MODE)
   }
 }

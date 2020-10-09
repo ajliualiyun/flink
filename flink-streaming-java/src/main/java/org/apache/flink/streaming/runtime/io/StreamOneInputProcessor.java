@@ -19,6 +19,7 @@
 package org.apache.flink.streaming.runtime.io;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.streaming.runtime.io.PushingAsyncDataInput.DataOutput;
 import org.apache.flink.streaming.runtime.tasks.OperatorChain;
@@ -66,7 +67,7 @@ public final class StreamOneInputProcessor<IN> implements StreamInputProcessor {
 		InputStatus status = input.emitNext(output);
 
 		if (status == InputStatus.END_OF_INPUT) {
-			operatorChain.endHeadOperatorInput(1);
+			operatorChain.endMainOperatorInput(1);
 		}
 
 		return status;

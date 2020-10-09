@@ -21,11 +21,17 @@ package org.apache.flink.table.planner.factories;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.io.CollectionInputFormat;
-import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
+import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.source.FromElementsFunction;
+import org.apache.flink.table.api.TableException;
+import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.connector.RuntimeConverter;
+import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.sink.OutputFormatProvider;
+import org.apache.flink.table.connector.sink.SinkFunctionProvider;
 import org.apache.flink.table.connector.source.AsyncTableFunctionProvider;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.InputFormatProvider;
@@ -34,15 +40,25 @@ import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceFunctionProvider;
 import org.apache.flink.table.connector.source.TableFunctionProvider;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
+import org.apache.flink.table.connector.source.abilities.SupportsLimitPushDown;
+import org.apache.flink.table.connector.source.abilities.SupportsPartitionPushDown;
+import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.expressions.ResolvedExpression;
+import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.functions.AsyncTableFunction;
-import org.apache.flink.table.functions.FunctionContext;
 import org.apache.flink.table.functions.TableFunction;
+import org.apache.flink.table.planner.factories.TestValuesRuntimeFunctions.AppendingOutputFormat;
+import org.apache.flink.table.planner.factories.TestValuesRuntimeFunctions.AppendingSinkFunction;
+import org.apache.flink.table.planner.factories.TestValuesRuntimeFunctions.AsyncTestValueLookupFunction;
+import org.apache.flink.table.planner.factories.TestValuesRuntimeFunctions.KeyedUpsertingSinkFunction;
+import org.apache.flink.table.planner.factories.TestValuesRuntimeFunctions.RetractingSinkFunction;
+import org.apache.flink.table.planner.factories.TestValuesRuntimeFunctions.TestValuesLookupFunction;
+import org.apache.flink.table.planner.utils.FilterUtils;
 import org.apache.flink.table.planner.utils.JavaScalaConversionUtil;
-import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.utils.TableSchemaUtils;
 import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.FlinkException;
@@ -59,39 +75,42 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import scala.collection.Seq;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
 
 /**
- * Test implementation of {@link DynamicTableSourceFactory} that creates
- * a source that produces a sequence of values.
+ * Test implementation of {@link DynamicTableSourceFactory} that creates a source that produces a sequence of values.
+ * And {@link TestValuesTableSource} can push down filter into table source. And it has some limitations.
+ * A predicate can be pushed down only if it satisfies the following conditions:
+ * 1. field name is in filterable-fields, which are defined in with properties.
+ * 2. the field type all should be comparable.
+ * 3. UDF is UPPER or LOWER.
  */
-public class TestValuesTableFactory implements DynamicTableSourceFactory {
+public final class TestValuesTableFactory implements DynamicTableSourceFactory, DynamicTableSinkFactory {
 
 	// --------------------------------------------------------------------------------------------
 	// Data Registration
 	// --------------------------------------------------------------------------------------------
 
 	private static final AtomicInteger idCounter = new AtomicInteger(0);
-	private static final Map<String, Collection<Tuple2<RowKind, Row>>> registeredData = new HashMap<>();
+	private static final Map<String, Collection<Row>> registeredData = new HashMap<>();
 
 	/**
 	 * Register the given data into the data factory context and return the data id.
 	 * The data id can be used as a reference to the registered data in data connector DDL.
 	 */
 	public static String registerData(Collection<Row> data) {
-		List<Tuple2<RowKind, Row>> dataWithKinds = new ArrayList<>();
-		for (Row row : data) {
-			dataWithKinds.add(Tuple2.of(RowKind.INSERT, row));
-		}
-		return registerChangelogData(dataWithKinds);
+		String id = String.valueOf(idCounter.incrementAndGet());
+		registeredData.put(id, data);
+		return id;
 	}
 
 	/**
@@ -103,39 +122,38 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 	}
 
 	/**
-	 * Register the given data with RowKind into the data factory context and return the data id.
-	 * The data id can be used as a reference to the registered data in data connector DDL.
-	 * TODO: remove this utility once Row supports RowKind.
+	 * Returns received raw results of the registered table sink.
+	 * The raw results are encoded with {@link RowKind}.
+	 *
+	 * @param tableName the table name of the registered table sink.
 	 */
-	public static String registerChangelogData(Collection<Tuple2<RowKind, Row>> data) {
-		String id = String.valueOf(idCounter.incrementAndGet());
-		registeredData.put(id, data);
-		return id;
+	public static List<String> getRawResults(String tableName) {
+		return TestValuesRuntimeFunctions.getRawResults(tableName);
 	}
 
 	/**
-	 * Register the given data with RowKind into the data factory context and return the data id.
-	 * The data id can be used as a reference to the registered data in data connector DDL.
-	 * TODO: remove this utility once Row supports RowKind.
+	 * Returns materialized (final) results of the registered table sink.
+	 *
+	 * @param tableName the table name of the registered table sink.
 	 */
-	public static String registerChangelogData(Seq<Tuple2<RowKind, Row>> data) {
-		return registerChangelogData(JavaScalaConversionUtil.toJava(data));
+	public static List<String> getResults(String tableName) {
+		return TestValuesRuntimeFunctions.getResults(tableName);
 	}
 
 	/**
 	 * Removes the registered data under the given data id.
 	 */
-	public static void clearAllRegisteredData() {
+	public static void clearAllData() {
 		registeredData.clear();
+		TestValuesRuntimeFunctions.clearResults();
 	}
 
 	/**
 	 * Creates a changelog row from the given RowKind short string and value objects.
 	 */
-	public static Tuple2<RowKind, Row> changelogRow(String rowKind, Object... values) {
+	public static Row changelogRow(String rowKind, Object... values) {
 		RowKind kind = parseRowKind(rowKind);
-		Row row = Row.of(values);
-		return Tuple2.of(kind, row);
+		return Row.ofKind(kind, values);
 	}
 
 	/**
@@ -181,6 +199,11 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 		.stringType()
 		.defaultValue("SourceFunction"); // another is "InputFormat"
 
+	private static final ConfigOption<String> RUNTIME_SINK = ConfigOptions
+		.key("runtime-sink")
+		.stringType()
+		.defaultValue("SinkFunction"); // another is "OutputFormat"
+
 	private static final ConfigOption<String> TABLE_SOURCE_CLASS = ConfigOptions
 		.key("table-source-class")
 		.stringType()
@@ -195,6 +218,36 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 		.key("async")
 		.booleanType()
 		.defaultValue(false);
+
+	private static final ConfigOption<Boolean> SINK_INSERT_ONLY = ConfigOptions
+		.key("sink-insert-only")
+		.booleanType()
+		.defaultValue(true);
+
+	private static final ConfigOption<Integer> SINK_EXPECTED_MESSAGES_NUM = ConfigOptions
+		.key("sink-expected-messages-num")
+		.intType()
+		.defaultValue(-1);
+
+	private static final ConfigOption<Boolean> NESTED_PROJECTION_SUPPORTED = ConfigOptions
+		.key("nested-projection-supported")
+		.booleanType()
+		.defaultValue(false);
+
+	private static final ConfigOption<List<String>> FILTERABLE_FIELDS = ConfigOptions
+		.key("filterable-fields")
+		.stringType()
+		.asList()
+		.noDefaultValue();
+
+	/**
+	 * Parse partition list from Options with the format as "key1:val1,key2:val2;key1:val3,key2:val4".
+	 */
+	private static final ConfigOption<List<String>> PARTITION_LIST = ConfigOptions
+		.key("partition-list")
+		.stringType()
+		.asList()
+		.defaultValues();
 
 	@Override
 	public String factoryIdentifier() {
@@ -212,18 +265,40 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 		String sourceClass = helper.getOptions().get(TABLE_SOURCE_CLASS);
 		boolean isAsync = helper.getOptions().get(ASYNC_ENABLED);
 		String lookupFunctionClass = helper.getOptions().get(LOOKUP_FUNCTION_CLASS);
+		boolean nestedProjectionSupported = helper.getOptions().get(NESTED_PROJECTION_SUPPORTED);
+		Optional<List<String>> filterableFields = helper.getOptions().getOptional(FILTERABLE_FIELDS);
+		Set<String> filterableFieldsSet = new HashSet<>();
+		filterableFields.ifPresent(filterableFieldsSet::addAll);
 
 		if (sourceClass.equals("DEFAULT")) {
-			Collection<Tuple2<RowKind, Row>> data = registeredData.getOrDefault(dataId, Collections.emptyList());
-			DataType rowDataType = context.getCatalogTable().getSchema().toPhysicalRowDataType();
+			Collection<Row> data = registeredData.getOrDefault(dataId, Collections.emptyList());
+			List<Map<String, String>> partitions = parsePartitionList(helper.getOptions().get(PARTITION_LIST));
+			TableSchema physicalSchema = TableSchemaUtils.getPhysicalSchema(context.getCatalogTable().getSchema());
+			// pushing project into scan will prune schema and we have to get the mapping between partition and row
+			Map<Map<String, String>, Collection<Row>> partition2Rows;
+			if (!partitions.isEmpty()) {
+				partition2Rows = mapPartitionToRow(physicalSchema, data, partitions);
+			} else {
+				// put all data into one partition
+				partitions = Collections.emptyList();
+				partition2Rows = new HashMap<>();
+				partition2Rows.put(Collections.emptyMap(), data);
+			}
+
 			return new TestValuesTableSource(
+				physicalSchema,
 				changelogMode,
 				isBounded,
 				runtimeSource,
-				rowDataType,
-				data,
+				partition2Rows,
 				isAsync,
-				lookupFunctionClass);
+				lookupFunctionClass,
+				nestedProjectionSupported,
+				null,
+				Collections.emptyList(),
+				filterableFieldsSet,
+				Long.MAX_VALUE,
+				partitions);
 		} else {
 			try {
 				return InstantiationUtil.instantiate(
@@ -231,9 +306,24 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 					DynamicTableSource.class,
 					Thread.currentThread().getContextClassLoader());
 			} catch (FlinkException e) {
-				throw new RuntimeException("Can't instantiate class " + sourceClass, e);
+				throw new TableException("Can't instantiate class " + sourceClass, e);
 			}
 		}
+	}
+
+	@Override
+	public DynamicTableSink createDynamicTableSink(Context context) {
+		FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+		helper.validate();
+		boolean isInsertOnly = helper.getOptions().get(SINK_INSERT_ONLY);
+		String runtimeSink = helper.getOptions().get(RUNTIME_SINK);
+		int expectedNum = helper.getOptions().get(SINK_EXPECTED_MESSAGES_NUM);
+		TableSchema schema = context.getCatalogTable().getSchema();
+		return new TestValuesTableSink(
+			schema,
+			context.getObjectIdentifier().getObjectName(),
+			isInsertOnly,
+			runtimeSink, expectedNum);
 	}
 
 	@Override
@@ -250,7 +340,66 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 			RUNTIME_SOURCE,
 			TABLE_SOURCE_CLASS,
 			LOOKUP_FUNCTION_CLASS,
-			ASYNC_ENABLED));
+			ASYNC_ENABLED,
+			TABLE_SOURCE_CLASS,
+			SINK_INSERT_ONLY,
+			RUNTIME_SINK,
+			SINK_EXPECTED_MESSAGES_NUM,
+			NESTED_PROJECTION_SUPPORTED,
+			FILTERABLE_FIELDS,
+			PARTITION_LIST));
+	}
+
+	private static List<Map<String, String>> parsePartitionList(List<String> stringPartitions) {
+		return stringPartitions.stream().map(
+			partition -> {
+				Map<String, String> spec = new HashMap<>();
+				Arrays.stream(partition.split(",")).forEach(pair -> {
+					String[] split = pair.split(":");
+					spec.put(split[0].trim(), split[1].trim());
+				});
+				return spec;
+			}).collect(Collectors.toList());
+	}
+
+	private static Map<Map<String, String>, Collection<Row>> mapPartitionToRow(
+			TableSchema schema,
+			Collection<Row> rows,
+			List<Map<String, String>> partitions) {
+		Map<Map<String, String>, Collection<Row>> map = new HashMap<>();
+		for (Map<String, String> partition: partitions) {
+			map.put(partition, new ArrayList<>());
+		}
+		String[] fieldnames = schema.getFieldNames();
+		for (Row row: rows) {
+			for (Map<String, String> partition: partitions) {
+				boolean match = true;
+				for (Map.Entry<String, String> entry: partition.entrySet()) {
+					int index = Arrays.asList(fieldnames).indexOf(entry.getKey());
+					if (index < 0) {
+						throw new IllegalArgumentException(
+							String.format("Illegal partition list: partition key %s is not found in schema.", entry.getKey()));
+					}
+					if (entry.getValue() != null) {
+						if (row.getField(index) == null) {
+							match = false;
+						} else {
+							match = entry.getValue().equals(Objects.requireNonNull(row.getField(index)).toString());
+						}
+					} else {
+						match = row.getField(index) == null;
+					}
+					if (!match) {
+						break;
+					}
+				}
+				if (match) {
+					map.get(partition).add(row);
+					break;
+				}
+			}
+		}
+		return map;
 	}
 
 	private ChangelogMode parseChangelogMode(String string) {
@@ -277,36 +426,60 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 	}
 
 	// --------------------------------------------------------------------------------------------
-	// Table source
+	// Table sources
 	// --------------------------------------------------------------------------------------------
 
 	/**
 	 * Values {@link DynamicTableSource} for testing.
 	 */
-	private static class TestValuesTableSource implements ScanTableSource, LookupTableSource {
+	private static class TestValuesTableSource implements ScanTableSource,
+		LookupTableSource,
+		SupportsProjectionPushDown,
+		SupportsFilterPushDown,
+		SupportsLimitPushDown,
+		SupportsPartitionPushDown{
 
+		private TableSchema physicalSchema;
 		private final ChangelogMode changelogMode;
 		private final boolean bounded;
 		private final String runtimeSource;
-		private final DataType physicalRowDataType;
-		private final Collection<Tuple2<RowKind, Row>> data;
+		private Map<Map<String, String>, Collection<Row>> data;
 		private final boolean isAsync;
 		private final @Nullable String lookupFunctionClass;
+		private final boolean nestedProjectionSupported;
+		private @Nullable int[] projectedFields;
+		private List<ResolvedExpression> filterPredicates;
+		private final Set<String> filterableFields;
+		private long limit;
+		private List<Map<String, String>> allPartitions;
 
 		private TestValuesTableSource(
+				TableSchema physicalSchema,
 				ChangelogMode changelogMode,
-				boolean bounded, String runtimeSource,
-				DataType physicalRowDataType,
-				Collection<Tuple2<RowKind, Row>> data,
+				boolean bounded,
+				String runtimeSource,
+				Map<Map<String, String>, Collection<Row>> data,
 				boolean isAsync,
-				@Nullable String lookupFunctionClass) {
+				@Nullable String lookupFunctionClass,
+				boolean nestedProjectionSupported,
+				int[] projectedFields,
+				List<ResolvedExpression> filterPredicates,
+				Set<String> filterableFields,
+				long limit,
+				List<Map<String, String>> allPartitions) {
+			this.physicalSchema = physicalSchema;
 			this.changelogMode = changelogMode;
 			this.bounded = bounded;
 			this.runtimeSource = runtimeSource;
-			this.physicalRowDataType = physicalRowDataType;
 			this.data = data;
 			this.isAsync = isAsync;
 			this.lookupFunctionClass = lookupFunctionClass;
+			this.nestedProjectionSupported = nestedProjectionSupported;
+			this.projectedFields = projectedFields;
+			this.filterPredicates = filterPredicates;
+			this.filterableFields = filterableFields;
+			this.limit = limit;
+			this.allPartitions = allPartitions;
 		}
 
 		@Override
@@ -316,12 +489,13 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 
 		@SuppressWarnings("unchecked")
 		@Override
-		public ScanRuntimeProvider getScanRuntimeProvider(ScanTableSource.Context runtimeProviderContext) {
+		public ScanRuntimeProvider getScanRuntimeProvider(ScanContext runtimeProviderContext) {
 			TypeSerializer<RowData> serializer = (TypeSerializer<RowData>) runtimeProviderContext
-				.createTypeInformation(physicalRowDataType)
+				.createTypeInformation(physicalSchema.toRowDataType())
 				.createSerializer(new ExecutionConfig());
-			DataStructureConverter converter = runtimeProviderContext.createDataStructureConverter(physicalRowDataType);
-			Collection<RowData> values = convertToRowData(data, converter);
+			DataStructureConverter converter = runtimeProviderContext.createDataStructureConverter(physicalSchema.toRowDataType());
+			converter.open(RuntimeConverter.Context.create(TestValuesTableFactory.class.getClassLoader()));
+			Collection<RowData> values = convertToRowData(data, projectedFields, converter);
 
 			if (runtimeSource.equals("SourceFunction")) {
 				try {
@@ -329,7 +503,7 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 						new FromElementsFunction<>(serializer, values),
 						bounded);
 				} catch (IOException e) {
-					throw new RuntimeException(e);
+					throw new TableException("Fail to init source function", e);
 				}
 			} else if (runtimeSource.equals("InputFormat")) {
 				return InputFormatProvider.of(new CollectionInputFormat<>(values, serializer));
@@ -340,7 +514,7 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 
 		@SuppressWarnings({"unchecked", "rawtypes"})
 		@Override
-		public LookupRuntimeProvider getLookupRuntimeProvider(LookupTableSource.Context context) {
+		public LookupRuntimeProvider getLookupRuntimeProvider(LookupContext context) {
 			if (lookupFunctionClass != null) {
 				// use the specified lookup function
 				try {
@@ -360,16 +534,23 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 				.mapToInt(k -> k[0])
 				.toArray();
 			Map<Row, List<Row>> mapping = new HashMap<>();
-			data.forEach(entry -> {
+			Collection<Row> rows;
+			if (allPartitions.equals(Collections.EMPTY_LIST)) {
+				rows = data.getOrDefault(Collections.EMPTY_MAP, Collections.EMPTY_LIST);
+			} else {
+				rows = new ArrayList<>();
+				allPartitions.forEach(key -> rows.addAll(data.getOrDefault(key, new ArrayList<>())));
+			}
+			rows.forEach(record -> {
 				Row key = Row.of(Arrays.stream(lookupIndices)
-					.mapToObj(idx -> entry.f1.getField(idx))
+					.mapToObj(record::getField)
 					.toArray());
 				List<Row> list = mapping.get(key);
 				if (list != null) {
-					list.add(entry.f1);
+					list.add(record);
 				} else {
 					list = new ArrayList<>();
-					list.add(entry.f1);
+					list.add(record);
 					mapping.put(key, list);
 				}
 			});
@@ -381,8 +562,54 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 		}
 
 		@Override
+		public boolean supportsNestedProjection() {
+			return nestedProjectionSupported;
+		}
+
+		@Override
+		public void applyProjection(int[][] projectedFields) {
+			this.physicalSchema = TableSchemaUtils.projectSchema(physicalSchema, projectedFields);
+			this.projectedFields = Arrays.stream(projectedFields).mapToInt(f -> f[0]).toArray();
+		}
+
+		@Override
+		public Result applyFilters(List<ResolvedExpression> filters) {
+			List<ResolvedExpression> acceptedFilters = new ArrayList<>();
+			List<ResolvedExpression> remainingFilters = new ArrayList<>();
+			for (ResolvedExpression expr : filters) {
+				if (FilterUtils.shouldPushDown(expr, filterableFields)) {
+					acceptedFilters.add(expr);
+				} else {
+					remainingFilters.add(expr);
+				}
+			}
+			this.filterPredicates = acceptedFilters;
+			return Result.of(acceptedFilters, remainingFilters);
+		}
+
+		private Function<String, Comparable<?>> getValueGetter(Row row) {
+			return fieldName -> {
+				int idx = Arrays.asList(physicalSchema.getFieldNames()).indexOf(fieldName);
+				return (Comparable<?>) row.getField(idx);
+			};
+		}
+
+		@Override
 		public DynamicTableSource copy() {
-			return new TestValuesTableSource(changelogMode, bounded, runtimeSource, physicalRowDataType, data, isAsync, lookupFunctionClass);
+			return new TestValuesTableSource(
+				physicalSchema,
+				changelogMode,
+				bounded,
+				runtimeSource,
+				data,
+				isAsync,
+				lookupFunctionClass,
+				nestedProjectionSupported,
+				projectedFields,
+				filterPredicates,
+				filterableFields,
+				limit,
+				allPartitions);
 		}
 
 		@Override
@@ -390,105 +617,77 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 			return "TestValues";
 		}
 
-		private static Collection<RowData> convertToRowData(
-				Collection<Tuple2<RowKind, Row>> data,
+		private Collection<RowData> convertToRowData(
+				Map<Map<String, String>, Collection<Row>> data,
+				int[] projectedFields,
 				DataStructureConverter converter) {
 			List<RowData> result = new ArrayList<>();
-			for (Tuple2<RowKind, Row> value : data) {
-				RowData rowData = (RowData) converter.toInternal(value.f1);
-				if (rowData != null) {
-					rowData.setRowKind(value.f0);
-					result.add(rowData);
+			List<Map<String, String>> keys = allPartitions.isEmpty() ?
+				Collections.singletonList(Collections.emptyMap()) :
+				allPartitions;
+			for (Map<String, String> partition: keys) {
+				for (Row value : data.get(partition)) {
+					if (result.size() >= limit) {
+						return result;
+					}
+					boolean isRetained = FilterUtils.isRetainedAfterApplyingFilterPredicates(
+						filterPredicates,
+						getValueGetter(value));
+					if (isRetained) {
+						Row projectedRow;
+						if (projectedFields == null) {
+							projectedRow = value;
+						} else {
+							Object[] newValues = new Object[projectedFields.length];
+							for (int i = 0; i < projectedFields.length; ++i) {
+								newValues[i] = value.getField(projectedFields[i]);
+							}
+							projectedRow = Row.of(newValues);
+						}
+						RowData rowData = (RowData) converter.toInternal(projectedRow);
+						if (rowData != null) {
+							rowData.setRowKind(value.getKind());
+							result.add(rowData);
+						}
+					}
 				}
 			}
 			return result;
 		}
-	}
 
-	/**
-	 * A lookup function which find matched rows with the given fields.
-	 */
-	public static class TestValuesLookupFunction extends TableFunction<Row> {
-
-		private static final long serialVersionUID = 1L;
-		private final Map<Row, List<Row>> data;
-		private transient boolean isOpenCalled = false;
-
-		private TestValuesLookupFunction(Map<Row, List<Row>> data) {
-			this.data = data;
+		@Override
+		public Optional<List<Map<String, String>>> listPartitions() {
+			if (allPartitions.isEmpty()) {
+				throw new UnsupportedOperationException("Please use catalog to read partitions");
+			}
+			return Optional.of(allPartitions);
 		}
 
 		@Override
-		public void open(FunctionContext context) throws Exception {
-			RESOURCE_COUNTER.incrementAndGet();
-			isOpenCalled = true;
-		}
-
-		public void eval(Object... inputs) {
-			checkArgument(isOpenCalled, "open() is not called.");
-			Row key = Row.of(inputs);
-			if (Arrays.asList(inputs).contains(null)) {
-				throw new IllegalArgumentException(String.format(
-					"Lookup key %s contains null value, which should not happen.", key));
-			}
-			List<Row> list = data.get(key);
-			if (list != null) {
-				list.forEach(this::collect);
+		public void applyPartitions(List<Map<String, String>> remainingPartitions) {
+			// remainingPartition is non-nullable.
+			if (allPartitions.isEmpty()) {
+				// read partitions from catalog
+				if (!remainingPartitions.isEmpty()) {
+					// map data into partitions
+					this.allPartitions = remainingPartitions;
+					this.data = mapPartitionToRow(physicalSchema, data.get(Collections.EMPTY_MAP), remainingPartitions);
+				} else {
+					// we will read data from Collections.emptyList() if allPartitions is empty.
+					// therefore, we should clear all data manually.
+					this.data.put(Collections.emptyMap(), Collections.emptyList());
+				}
+			} else {
+				this.allPartitions = remainingPartitions;
+				if (remainingPartitions.isEmpty()) {
+					this.data.put(Collections.emptyMap(), Collections.emptyList());
+				}
 			}
 		}
 
 		@Override
-		public void close() throws Exception {
-			RESOURCE_COUNTER.decrementAndGet();
-		}
-	}
-
-	/**
-	 * An async lookup function which find matched rows with the given fields.
-	 */
-	public static class AsyncTestValueLookupFunction extends AsyncTableFunction<Row> {
-
-		private static final long serialVersionUID = 1L;
-		private final Map<Row, List<Row>> mapping;
-		private transient boolean isOpenCalled = false;
-		private transient ExecutorService executor;
-
-		private AsyncTestValueLookupFunction(Map<Row, List<Row>> mapping) {
-			this.mapping = mapping;
-		}
-
-		@Override
-		public void open(FunctionContext context) throws Exception {
-			RESOURCE_COUNTER.incrementAndGet();
-			isOpenCalled = true;
-			executor = Executors.newSingleThreadExecutor();
-		}
-
-		public void eval(CompletableFuture<Collection<Row>> resultFuture, Object... inputs) {
-			checkArgument(isOpenCalled, "open() is not called.");
-			final Row key = Row.of(inputs);
-			if (Arrays.asList(inputs).contains(null)) {
-				throw new IllegalArgumentException(String.format(
-					"Lookup key %s contains null value, which should not happen.", key));
-			}
-			CompletableFuture
-				.supplyAsync(() -> {
-					List<Row> list = mapping.get(key);
-					if (list == null) {
-						return Collections.<Row>emptyList();
-					} else {
-						return list;
-					}
-				}, executor)
-				.thenAccept(resultFuture::complete);
-		}
-
-		@Override
-		public void close() throws Exception {
-			RESOURCE_COUNTER.decrementAndGet();
-			if (executor != null && !executor.isShutdown()) {
-				executor.shutdown();
-			}
+		public void applyLimit(long limit) {
+			this.limit = limit;
 		}
 	}
 
@@ -498,7 +697,7 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 	public static class MockedLookupTableSource implements LookupTableSource {
 
 		@Override
-		public LookupRuntimeProvider getLookupRuntimeProvider(Context context) {
+		public LookupRuntimeProvider getLookupRuntimeProvider(LookupContext context) {
 			return null;
 		}
 
@@ -524,7 +723,7 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 		}
 
 		@Override
-		public ScanRuntimeProvider getScanRuntimeProvider(Context runtimeProviderContext) {
+		public ScanRuntimeProvider getScanRuntimeProvider(ScanContext runtimeProviderContext) {
 			return null;
 		}
 
@@ -541,6 +740,111 @@ public class TestValuesTableFactory implements DynamicTableSourceFactory {
 		@Override
 		public Result applyFilters(List<ResolvedExpression> filters) {
 			return null;
+		}
+	}
+
+	// --------------------------------------------------------------------------------------------
+	// Table sinks
+	// --------------------------------------------------------------------------------------------
+
+	/**
+	 * Values {@link DynamicTableSink} for testing.
+	 */
+	private static class TestValuesTableSink implements DynamicTableSink {
+
+		private final TableSchema schema;
+		private final String tableName;
+		private final boolean isInsertOnly;
+		private final String runtimeSink;
+		private final int expectedNum;
+
+		private TestValuesTableSink(
+				TableSchema schema,
+				String tableName,
+				boolean isInsertOnly,
+				String runtimeSink,
+				int expectedNum) {
+			this.schema = schema;
+			this.tableName = tableName;
+			this.isInsertOnly = isInsertOnly;
+			this.runtimeSink = runtimeSink;
+			this.expectedNum = expectedNum;
+		}
+
+		@Override
+		public ChangelogMode getChangelogMode(ChangelogMode requestedMode) {
+			if (isInsertOnly) {
+				return ChangelogMode.insertOnly();
+			} else {
+				ChangelogMode.Builder builder = ChangelogMode.newBuilder();
+				if (schema.getPrimaryKey().isPresent()) {
+					// can update on key, ignore UPDATE_BEFORE
+					for (RowKind kind : requestedMode.getContainedKinds()) {
+						if (kind != RowKind.UPDATE_BEFORE) {
+							builder.addContainedKind(kind);
+						}
+					}
+					return builder.build();
+				} else {
+					// don't have key, works in retract mode
+					return requestedMode;
+				}
+			}
+		}
+
+		@Override
+		public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
+			DataStructureConverter converter = context.createDataStructureConverter(schema.toPhysicalRowDataType());
+			if (isInsertOnly) {
+				checkArgument(expectedNum == -1,
+					"Appending Sink doesn't support '" + SINK_EXPECTED_MESSAGES_NUM.key() + "' yet.");
+				if (runtimeSink.equals("SinkFunction")) {
+					return SinkFunctionProvider.of(
+						new AppendingSinkFunction(
+							tableName,
+							converter));
+				} else if (runtimeSink.equals("OutputFormat")) {
+					return OutputFormatProvider.of(
+						new AppendingOutputFormat(
+							tableName,
+							converter));
+				} else {
+					throw new IllegalArgumentException("Unsupported runtime sink class: " + runtimeSink);
+				}
+			} else {
+				// we don't support OutputFormat for updating query in the TestValues connector
+				assert runtimeSink.equals("SinkFunction");
+				SinkFunction<RowData> sinkFunction;
+				if (schema.getPrimaryKey().isPresent()) {
+					int[] keyIndices = TableSchemaUtils.getPrimaryKeyIndices(schema);
+					sinkFunction = new KeyedUpsertingSinkFunction(
+						tableName,
+						converter,
+						keyIndices,
+						expectedNum);
+				} else {
+					checkArgument(expectedNum == -1,
+						"Retracting Sink doesn't support '" + SINK_EXPECTED_MESSAGES_NUM.key() + "' yet.");
+					sinkFunction = new RetractingSinkFunction(
+						tableName,
+						converter);
+				}
+				return SinkFunctionProvider.of(sinkFunction);
+			}
+		}
+
+		@Override
+		public DynamicTableSink copy() {
+			return new TestValuesTableSink(
+				schema,
+				tableName,
+				isInsertOnly,
+				runtimeSink, expectedNum);
+		}
+
+		@Override
+		public String asSummaryString() {
+			return "TestValues";
 		}
 	}
 }

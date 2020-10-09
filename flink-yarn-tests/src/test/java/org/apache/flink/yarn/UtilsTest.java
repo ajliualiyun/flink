@@ -25,6 +25,7 @@ import org.apache.flink.runtime.clusterframework.ContaineredTaskManagerParameter
 import org.apache.flink.runtime.clusterframework.TaskExecutorProcessSpec;
 import org.apache.flink.runtime.clusterframework.TaskExecutorProcessUtils;
 import org.apache.flink.util.TestLogger;
+import org.apache.flink.yarn.util.TestUtils;
 
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
@@ -32,6 +33,7 @@ import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
+import org.apache.hadoop.yarn.api.records.LocalResourceType;
 import org.apache.hadoop.yarn.api.records.LocalResourceVisibility;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
@@ -66,7 +68,7 @@ public class UtilsTest extends TestLogger {
 
 	@Test
 	public void testUberjarLocator() {
-		File dir = YarnTestBase.findFile("..", new YarnTestBase.RootDirFilenameFilter());
+		File dir = TestUtils.findFile("..", new TestUtils.RootDirFilenameFilter());
 		Assert.assertNotNull(dir);
 		Assert.assertTrue(dir.getName().endsWith(".jar"));
 		dir = dir.getParentFile().getParentFile(); // from uberjar to lib to root
@@ -99,7 +101,8 @@ public class UtilsTest extends TestLogger {
 			new Path(root.toURI()),
 			0,
 			System.currentTimeMillis(),
-			LocalResourceVisibility.APPLICATION).toString());
+			LocalResourceVisibility.APPLICATION,
+			LocalResourceType.FILE).toString());
 		env = Collections.unmodifiableMap(env);
 
 		File credentialFile = temporaryFolder.newFile("container_tokens");

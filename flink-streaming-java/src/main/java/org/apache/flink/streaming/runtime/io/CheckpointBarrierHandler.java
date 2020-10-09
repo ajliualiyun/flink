@@ -22,15 +22,14 @@ import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.io.network.api.CancelCheckpointMarker;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
-import org.apache.flink.runtime.io.network.buffer.BufferReceivedListener;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
-import org.apache.flink.util.function.ThrowingRunnable;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -50,36 +49,41 @@ public abstract class CheckpointBarrierHandler implements Closeable {
 		this.toNotifyOnCheckpoint = checkNotNull(toNotifyOnCheckpoint);
 	}
 
-	public abstract void releaseBlocksAndResetBarriers();
+	public void releaseBlocksAndResetBarriers() throws IOException {
+	}
 
 	/**
 	 * Checks whether the channel with the given index is blocked.
 	 *
-	 * @param channelIndex The channel index to check.
+	 * @param channelInfo The channel index to check.
 	 * @return True if the channel is blocked, false if not.
 	 */
-	public abstract boolean isBlocked(int channelIndex);
+	public boolean isBlocked(InputChannelInfo channelInfo) {
+		return false;
+	}
 
 	@Override
 	public void close() throws IOException {
 	}
 
-	public abstract void processBarrier(CheckpointBarrier receivedBarrier, int channelIndex) throws Exception;
+	public abstract void processBarrier(CheckpointBarrier receivedBarrier, InputChannelInfo channelInfo) throws IOException;
 
-	public abstract void processCancellationBarrier(CancelCheckpointMarker cancelBarrier) throws Exception;
+	public abstract void processCancellationBarrier(CancelCheckpointMarker cancelBarrier) throws IOException;
 
-	public abstract void processEndOfPartition() throws Exception;
+	public abstract void processEndOfPartition() throws IOException;
 
 	public abstract long getLatestCheckpointId();
 
-	public abstract long getAlignmentDurationNanos();
+	public long getAlignmentDurationNanos() {
+		return 0;
+	}
 
 	public long getCheckpointStartDelayNanos() {
 		return latestCheckpointStartDelayNanos;
 	}
 
-	public Optional<BufferReceivedListener> getBufferReceivedListener() {
-		return Optional.empty();
+	public CompletableFuture<Void> getAllBarriersReceivedFuture(long checkpointId) {
+		return CompletableFuture.completedFuture(null);
 	}
 
 	protected void notifyCheckpoint(CheckpointBarrier checkpointBarrier, long alignmentDurationNanos) throws IOException {
@@ -111,10 +115,8 @@ public abstract class CheckpointBarrierHandler implements Closeable {
 			System.currentTimeMillis() - checkpointCreationTimestamp);
 	}
 
-	protected <E extends Exception> void executeInTaskThread(
-			ThrowingRunnable<E> runnable,
-			String descriptionFormat,
-			Object... descriptionArgs) throws E {
-		toNotifyOnCheckpoint.executeInTaskThread(runnable, descriptionFormat, descriptionArgs);
+	protected abstract boolean isCheckpointPending();
+
+	protected void abortPendingCheckpoint(long checkpointId, CheckpointException exception) throws IOException {
 	}
 }

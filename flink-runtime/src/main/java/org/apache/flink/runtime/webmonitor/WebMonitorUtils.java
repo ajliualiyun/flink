@@ -96,7 +96,7 @@ public final class WebMonitorUtils {
 			if (logFilePath == null || logFilePath.length() < 4) {
 				LOG.warn("JobManager log files are unavailable in the web dashboard. " +
 					"Log file location not found in environment variable '{}' or configuration key '{}'.",
-					logEnv, WebOptions.LOG_PATH);
+					logEnv, WebOptions.LOG_PATH.key());
 				return new LogFileLocation(null, null, null);
 			}
 
@@ -227,7 +227,7 @@ public final class WebMonitorUtils {
 	public static JobDetails createDetailsForJob(AccessExecutionGraph job) {
 		JobStatus status = job.getState();
 
-		long started = job.getStatusTimestamp(JobStatus.CREATED);
+		long started = job.getStatusTimestamp(JobStatus.INITIALIZING);
 		long finished = status.isGloballyTerminalState() ? job.getStatusTimestamp(status) : -1L;
 		long duration = (finished >= 0L ? finished : System.currentTimeMillis()) - started;
 

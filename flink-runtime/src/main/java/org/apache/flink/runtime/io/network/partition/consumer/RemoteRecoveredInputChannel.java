@@ -27,7 +27,6 @@ import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import java.io.IOException;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
-import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * An input channel reads recovered state from previous unaligned checkpoint snapshots
@@ -37,8 +36,6 @@ public class RemoteRecoveredInputChannel extends RecoveredInputChannel {
 	private final ConnectionID connectionId;
 	private final ConnectionManager connectionManager;
 
-	private boolean exclusiveBuffersAssigned;
-
 	RemoteRecoveredInputChannel(
 			SingleInputGate inputGate,
 			int channelIndex,
@@ -47,8 +44,17 @@ public class RemoteRecoveredInputChannel extends RecoveredInputChannel {
 			ConnectionManager connectionManager,
 			int initialBackOff,
 			int maxBackoff,
+			int networkBuffersPerChannel,
 			InputChannelMetrics metrics) {
-		super(inputGate, channelIndex, partitionId, initialBackOff, maxBackoff, metrics.getNumBytesInRemoteCounter(), metrics.getNumBuffersInRemoteCounter());
+		super(
+			inputGate,
+			channelIndex,
+			partitionId,
+			initialBackOff,
+			maxBackoff,
+			metrics.getNumBytesInRemoteCounter(),
+			metrics.getNumBuffersInRemoteCounter(),
+			networkBuffersPerChannel);
 
 		this.connectionId = checkNotNull(connectionId);
 		this.connectionManager = checkNotNull(connectionManager);
@@ -64,16 +70,14 @@ public class RemoteRecoveredInputChannel extends RecoveredInputChannel {
 			connectionManager,
 			initialBackoff,
 			maxBackoff,
+			networkBuffersPerChannel,
 			numBytesIn,
 			numBuffersIn);
+		if (channelStateWriter != null) {
+			remoteInputChannel.setChannelStateWriter(channelStateWriter);
+		}
 		remoteInputChannel.assignExclusiveSegments();
 		return remoteInputChannel;
 	}
 
-	void assignExclusiveSegments() throws IOException {
-		checkState(!exclusiveBuffersAssigned, "Exclusive buffers should be assigned only once.");
-
-		bufferManager.requestExclusiveBuffers();
-		exclusiveBuffersAssigned = true;
-	}
 }

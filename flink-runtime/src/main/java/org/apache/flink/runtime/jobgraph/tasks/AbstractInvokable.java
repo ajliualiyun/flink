@@ -28,7 +28,6 @@ import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.SerializedValue;
-import org.apache.flink.util.function.ThrowingRunnable;
 
 import java.io.IOException;
 import java.util.concurrent.Future;
@@ -150,7 +149,7 @@ public abstract class AbstractInvokable {
 	 * @return user code class loader of this invokable.
 	 */
 	public final ClassLoader getUserCodeClassLoader() {
-		return getEnvironment().getUserClassLoader();
+		return getEnvironment().getUserCodeClassLoader().asClassLoader();
 	}
 
 	/**
@@ -238,20 +237,6 @@ public abstract class AbstractInvokable {
 	}
 
 	/**
-	 * This method performs some action asynchronously in the task thread.
-	 *
-	 * @param runnable the action to perform
-	 * @param descriptionFormat the optional description for the command that is used for debugging and error-reporting.
-	 * @param descriptionArgs the parameters used to format the final description string.
-	 */
-	public <E extends Exception> void executeInTaskThread(
-			ThrowingRunnable<E> runnable,
-			String descriptionFormat,
-			Object... descriptionArgs) throws E {
-		throw new UnsupportedOperationException(String.format("runInTaskThread not supported by %s", this.getClass().getName()));
-	}
-
-	/**
 	 * Aborts a checkpoint as the result of receiving possibly some checkpoint barriers,
 	 * but at least one {@link org.apache.flink.runtime.io.network.api.CancelCheckpointMarker}.
 	 *
@@ -275,6 +260,18 @@ public abstract class AbstractInvokable {
 	 */
 	public Future<Void> notifyCheckpointCompleteAsync(long checkpointId) {
 		throw new UnsupportedOperationException(String.format("notifyCheckpointCompleteAsync not supported by %s", this.getClass().getName()));
+	}
+
+	/**
+	 * Invoked when a checkpoint has been aborted, i.e., when the checkpoint coordinator has received a decline message
+	 * from one task and try to abort the targeted checkpoint by notification.
+	 *
+	 * @param checkpointId The ID of the checkpoint that is aborted.
+	 *
+	 * @return future that completes when the notification has been processed by the task.
+	 */
+	public Future<Void> notifyCheckpointAbortAsync(long checkpointId) {
+		throw new UnsupportedOperationException(String.format("notifyCheckpointAbortAsync not supported by %s", this.getClass().getName()));
 	}
 
 	public void dispatchOperatorEvent(OperatorID operator, SerializedValue<OperatorEvent> event) throws FlinkException {

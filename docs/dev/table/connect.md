@@ -1,7 +1,5 @@
 ---
-title: "Table API Connectors"
-nav-parent_id: connectors-root
-nav-pos: 2
+title: "Table API Legacy Connectors"
 ---
 <!--
 Licensed to the Apache Software Foundation (ASF) under one
@@ -45,22 +43,18 @@ The following tables list all available connectors and formats. Their mutual com
 | Filesystem        |                     | Built-in                     | Built-in               |
 | Elasticsearch     | 6                   | `flink-connector-elasticsearch6` | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-sql-connector-elasticsearch6{{site.scala_version_suffix}}/{{site.version}}/flink-sql-connector-elasticsearch6{{site.scala_version_suffix}}-{{site.version}}.jar) |
 | Elasticsearch     | 7                   | `flink-connector-elasticsearch7` | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-sql-connector-elasticsearch7{{site.scala_version_suffix}}/{{site.version}}/flink-sql-connector-elasticsearch7{{site.scala_version_suffix}}-{{site.version}}.jar) |
-| Apache Kafka      | 0.10                | `flink-connector-kafka-0.10` | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-sql-connector-kafka-0.10{{site.scala_version_suffix}}/{{site.version}}/flink-sql-connector-kafka-0.10{{site.scala_version_suffix}}-{{site.version}}.jar) |
-| Apache Kafka      | 0.11                | `flink-connector-kafka-0.11` | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-sql-connector-kafka-0.11{{site.scala_version_suffix}}/{{site.version}}/flink-sql-connector-kafka-0.11{{site.scala_version_suffix}}-{{site.version}}.jar) |
 | Apache Kafka      | 0.11+ (`universal`) | `flink-connector-kafka`      | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-sql-connector-kafka{{site.scala_version_suffix}}/{{site.version}}/flink-sql-connector-kafka{{site.scala_version_suffix}}-{{site.version}}.jar) |
-| HBase             | 1.4.3               | `flink-hbase`                | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-hbase{{site.scala_version_suffix}}/{{site.version}}/flink-hbase{{site.scala_version_suffix}}-{{site.version}}.jar) |
-| JDBC              |                     | `flink-jdbc`                 | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-jdbc{{site.scala_version_suffix}}/{{site.version}}/flink-jdbc{{site.scala_version_suffix}}-{{site.version}}.jar) |
+| Apache HBase      | 1.4.3               | `flink-connector-hbase`      | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-connector-hbase{{site.scala_version_suffix}}/{{site.version}}/flink-connector-hbase{{site.scala_version_suffix}}-{{site.version}}.jar) |
+| JDBC              |                     | `flink-connector-jdbc`       | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-connector-jdbc{{site.scala_version_suffix}}/{{site.version}}/flink-connector-jdbc{{site.scala_version_suffix}}-{{site.version}}.jar) |
 
 ### Formats
 
 | Name                       | Maven dependency             | SQL Client JAR         |
 | :------------------------- | :--------------------------- | :--------------------- |
 | Old CSV (for files)        | Built-in                     | Built-in               |
-| CSV (for Kafka)            | `flink-csv`                  | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-csv/{{site.version}}/flink-csv-{{site.version}}-sql-jar.jar) |
-| JSON                       | `flink-json`                 | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-json/{{site.version}}/flink-json-{{site.version}}-sql-jar.jar) |
+| CSV (for Kafka)            | `flink-csv`                  | Built-in               |
+| JSON                       | `flink-json`                 | Built-in               |
 | Apache Avro                | `flink-avro`                 | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-avro/{{site.version}}/flink-avro-{{site.version}}-sql-jar.jar) |
-| Apache ORC                 | `flink-orc`                  | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-orc{{site.scala_version_suffix}}/{{site.version}}/flink-orc{{site.scala_version_suffix}}-{{site.version}}-jar-with-dependencies.jar) |
-| Apache Parquet             | `flink-parquet`              | [Download](https://repo.maven.apache.org/maven2/org/apache/flink/flink-parquet{{site.scala_version_suffix}}/{{site.version}}/flink-parquet{{site.scala_version_suffix}}-{{site.version}}-jar-with-dependencies.jar) |
 
 {% else %}
 
@@ -84,7 +78,7 @@ This allows not only for better unification of APIs and SQL Client but also for 
 
 Every declaration is similar to a SQL `CREATE TABLE` statement. One can define the name of the table, the schema of the table, a connector, and a data format upfront for connecting to an external system.
 
-The **connector** describes the external system that stores the data of a table. Storage systems such as [Apacha Kafka](http://kafka.apache.org/) or a regular file system can be declared here. The connector might already provide a fixed format.
+The **connector** describes the external system that stores the data of a table. Storage systems such as [Apache Kafka](http://kafka.apache.org/) or a regular file system can be declared here. The connector might already provide a fixed format.
 
 Some systems support different **data formats**. For example, a table that is stored in Kafka or in files can encode its rows with CSV, JSON, or Avro. A database connector might need the table schema here. Whether or not a storage system requires the definition of a format, is documented for every [connector](connect.html#table-connectors). Different systems also require different [types of formats](connect.html#table-formats) (e.g., column-oriented formats vs. row-oriented formats). The documentation states which format types and connectors are compatible.
 
@@ -95,7 +89,7 @@ The subsequent sections will cover each definition part ([connector](connect.htm
 <div class="codetabs" markdown="1">
 <div data-lang="DDL" markdown="1">
 {% highlight sql %}
-tableEnvironment.sqlUpdate(
+tableEnvironment.executeSql(
     "CREATE TABLE MyTable (\n" +
     "  ...    -- declare table schema \n" +
     ") WITH (\n" +
@@ -144,7 +138,7 @@ schema: ...
 
 The table's type (`source`, `sink`, or `both`) determines how a table is registered. In case of table type `both`, both a table source and table sink are registered under the same name. Logically, this means that we can both read and write to such a table similarly to a table in a regular DBMS.
 
-For streaming queries, an [update mode](connect.html#update-mode) declares how to communicate between a dynamic table and the storage system for continuous queries. The connector might already provide a default update mode, e.g. Kafka connector works in append mode by default.
+For streaming queries, an [update mode](connect.html#update-modes) declares how to communicate between a dynamic table and the storage system for continuous queries. The connector might already provide a default update mode, e.g. Kafka connector works in append mode by default.
 
 The following code shows a full example of how to connect to Kafka for reading Json records.
 
@@ -1102,7 +1096,7 @@ connector:
       max-size: 42 mb           # optional: maximum size of buffered actions in bytes per bulk request
                                 #   (only MB granularity is supported)
       interval: 60000           # optional: bulk flush interval (in milliseconds)
-      back-off:                 # optional: backoff strategy ("disabled" by default)
+      backoff:                 # optional: backoff strategy ("disabled" by default)
         type: ...               #   valid strategies are "disabled", "constant", or "exponential"
         max-retries: 3          # optional: maximum number of retries
         delay: 30000            # optional: delay between each backoff attempt (in milliseconds)
@@ -1208,7 +1202,7 @@ CREATE TABLE MyUserTable (
     .version('1.4.3')                      # required: currently only support '1.4.3'
     .table_name('hbase_table_name')        # required: HBase table name
     .zookeeper_quorum('localhost:2181')    # required: HBase Zookeeper quorum configuration
-    .zookeeper_node_parent('/test')        # optional: the root dir in Zookeeper for Hbae cluster.
+    .zookeeper_node_parent('/test')        # optional: the root dir in Zookeeper for Hbase cluster.
                                            # The default value is '/hbase'
     .write_buffer_flush_max_size('10mb')   # optional: writing option, determines how many size in memory of buffered
                                            # rows to insert per round trip. This can help performance on writing to JDBC
@@ -1281,7 +1275,7 @@ To use JDBC connector, need to choose an actual driver to use. Here are drivers 
 
 **Catalog**
 
-JDBC Connector can be used together with [`JDBCCatalog`]({{ site.baseurl }}/dev/table/catalogs.html#jdbccatalog) to greatly simplify development effort and improve user experience.
+JDBC Connector can be used together with [`JdbcCatalog`]({{ site.baseurl }}/dev/table/catalogs.html#jdbccatalog) to greatly simplify development effort and improve user experience.
 
 <br/>
 
@@ -1307,7 +1301,11 @@ CREATE TABLE MyUserTable (
   'connector.username' = 'name',
   'connector.password' = 'password',
   
-  -- **followings are scan options, optional, used when reading from table**
+  -- **followings are scan options, optional, used when reading from a table**
+
+  -- optional: SQL query / prepared statement.
+  -- If set, this will take precedence over the 'connector.table' setting
+  'connector.read.query' = 'SELECT * FROM sometable',
 
   -- These options must all be specified if any of them is specified. In addition,
   -- partition.num must be specified. They describe how to partition the table when
@@ -1405,7 +1403,7 @@ connector:
 
 **Upsert sink:** Flink automatically extracts valid keys from a query. For example, a query `SELECT a, b, c FROM t GROUP BY a, b` defines a composite key of the fields `a` and `b`. If a JDBC table is used as upsert sink, please make sure keys of the query is one of the unique key sets or primary key of the underlying database. This can guarantee the output result is as expected.
 
-**Temporary Join:**  JDBC connector can be used in temporal join as a lookup source. Currently, only sync lookup mode is supported. The lookup cache options (`connector.lookup.cache.max-rows` and `connector.lookup.cache.ttl`) must all be specified if any of them is specified. The lookup cache is used to improve performance of temporal join JDBC connector by querying the cache first instead of send all requests to remote database. But the returned value might not be the latest if it is from the cache. So it's a balance between throughput and correctness. 
+**Temporal Join:**  JDBC connector can be used in temporal join as a lookup source. Currently, only sync lookup mode is supported. The lookup cache options (`connector.lookup.cache.max-rows` and `connector.lookup.cache.ttl`) must all be specified if any of them is specified. The lookup cache is used to improve performance of temporal join JDBC connector by querying the cache first instead of send all requests to remote database. But the returned value might not be the latest if it is from the cache. So it's a balance between throughput and correctness. 
 
 **Writing:** As default, the `connector.write.flush.interval` is `0s` and `connector.write.flush.max-rows` is `5000`, which means for low traffic queries, the buffered output rows may not be flushed to database for a long time. So the interval configuration is recommended to set.
 
@@ -2004,7 +2002,6 @@ These are the additional `TableSink`s which are provided with Flink:
 
 | **Class name** | **Maven dependency** | **Batch?** | **Streaming?** | **Description**
 | `CsvTableSink` | `flink-table` | Y | Append | A simple sink for CSV files.
-| `JDBCAppendTableSink` | `flink-jdbc` | Y | Append | Writes a Table to a JDBC table.
 | `CassandraAppendTableSink` | `flink-connector-cassandra` | N | Append | Writes a Table to a Cassandra table.
 
 ### OrcTableSource
@@ -2079,7 +2076,7 @@ tableEnv.registerTableSink(
   sink);
 
 Table table = ...
-table.insertInto("csvOutputTable");
+table.executeInsert("csvOutputTable");
 {% endhighlight %}
 </div>
 
@@ -2100,7 +2097,7 @@ tableEnv.registerTableSink(
   sink)
 
 val table: Table = ???
-table.insertInto("csvOutputTable")
+table.executeInsert("csvOutputTable")
 {% endhighlight %}
 </div>
 
@@ -2129,63 +2126,6 @@ table.insert_into("csvOutputTable")
 {% endhighlight %}
 </div>
 </div>
-
-### JDBCAppendTableSink
-
-The `JDBCAppendTableSink` emits a `Table` to a JDBC connection. The sink only supports append-only streaming tables. It cannot be used to emit a `Table` that is continuously updated. See the [documentation on Table to Stream conversions](./streaming/dynamic_tables.html#table-to-stream-conversion) for details.
-
-The `JDBCAppendTableSink` inserts each `Table` row at least once into the database table (if checkpointing is enabled). However, you can specify the insertion query using <code>REPLACE</code> or <code>INSERT OVERWRITE</code> to perform upsert writes to the database.
-
-To use the JDBC sink, you have to add the JDBC connector dependency (<code>flink-jdbc</code>) to your project. Then you can create the sink using <code>JDBCAppendSinkBuilder</code>:
-
-<div class="codetabs" markdown="1">
-<div data-lang="java" markdown="1">
-{% highlight java %}
-
-JDBCAppendTableSink sink = JDBCAppendTableSink.builder()
-  .setDrivername("org.apache.derby.jdbc.EmbeddedDriver")
-  .setDBUrl("jdbc:derby:memory:ebookshop")
-  .setQuery("INSERT INTO books (id) VALUES (?)")
-  .setParameterTypes(INT_TYPE_INFO)
-  .build();
-
-tableEnv.registerTableSink(
-  "jdbcOutputTable",
-  // specify table schema
-  new String[]{"id"},
-  new TypeInformation[]{Types.INT},
-  sink);
-
-Table table = ...
-table.insertInto("jdbcOutputTable");
-{% endhighlight %}
-</div>
-
-<div data-lang="scala" markdown="1">
-{% highlight scala %}
-val sink: JDBCAppendTableSink = JDBCAppendTableSink.builder()
-  .setDrivername("org.apache.derby.jdbc.EmbeddedDriver")
-  .setDBUrl("jdbc:derby:memory:ebookshop")
-  .setQuery("INSERT INTO books (id) VALUES (?)")
-  .setParameterTypes(INT_TYPE_INFO)
-  .build()
-
-tableEnv.registerTableSink(
-  "jdbcOutputTable",
-  // specify table schema
-  Array[String]("id"),
-  Array[TypeInformation[_]](Types.INT),
-  sink)
-
-val table: Table = ???
-table.insertInto("jdbcOutputTable")
-{% endhighlight %}
-</div>
-</div>
-
-Similar to using <code>JDBCOutputFormat</code>, you have to explicitly specify the name of the JDBC driver, the JDBC URL, the query to be executed, and the field types of the JDBC table.
-
-{% top %}
 
 ### CassandraAppendTableSink
 

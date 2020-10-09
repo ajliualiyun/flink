@@ -20,8 +20,9 @@ package org.apache.flink.table.catalog.hive;
 
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.SqlDialect;
 import org.apache.flink.table.api.TableEnvironment;
-import org.apache.flink.table.api.java.StreamTableEnvironment;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.CatalogTest;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.catalog.hive.client.HiveShimLoader;
@@ -71,6 +72,11 @@ public class HiveTestUtils {
 				StringUtils.isNullOrWhitespaceOnly(hiveVersion) ? HiveShimLoader.getHiveVersion() : hiveVersion, true);
 	}
 
+	public static HiveCatalog createHiveCatalog(String name, String hiveConfDir, String hadoopConfDir, String hiveVersion) {
+		return new HiveCatalog(name, null, hiveConfDir, hadoopConfDir,
+			StringUtils.isNullOrWhitespaceOnly(hiveVersion) ? HiveShimLoader.getHiveVersion() : hiveVersion);
+	}
+
 	public static HiveCatalog createHiveCatalog(HiveConf hiveConf) {
 		return new HiveCatalog(CatalogTest.TEST_CATALOG_NAME, null, hiveConf, HiveShimLoader.getHiveVersion(), true);
 	}
@@ -112,17 +118,35 @@ public class HiveTestUtils {
 	}
 
 	public static TableEnvironment createTableEnvWithBlinkPlannerBatchMode() {
+		return createTableEnvWithBlinkPlannerBatchMode(SqlDialect.DEFAULT);
+	}
+
+	public static TableEnvironment createTableEnvWithBlinkPlannerBatchMode(SqlDialect dialect) {
 		EnvironmentSettings settings = EnvironmentSettings.newInstance().useBlinkPlanner().inBatchMode().build();
 		TableEnvironment tableEnv = TableEnvironment.create(settings);
 		tableEnv.getConfig().getConfiguration().setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM.key(), 1);
+		tableEnv.getConfig().setSqlDialect(dialect);
 		return tableEnv;
 	}
 
 	public static StreamTableEnvironment createTableEnvWithBlinkPlannerStreamMode(
 			StreamExecutionEnvironment env) {
+		return createTableEnvWithBlinkPlannerStreamMode(env, SqlDialect.DEFAULT);
+	}
+
+	public static StreamTableEnvironment createTableEnvWithBlinkPlannerStreamMode(
+			StreamExecutionEnvironment env, SqlDialect dialect) {
 		EnvironmentSettings settings = EnvironmentSettings.newInstance().useBlinkPlanner().inStreamingMode().build();
 		StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env, settings);
 		tableEnv.getConfig().getConfiguration().setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM.key(), 1);
+		tableEnv.getConfig().setSqlDialect(dialect);
+		return tableEnv;
+	}
+
+	public static TableEnvironment createTableEnvWithHiveCatalog(HiveCatalog catalog) {
+		TableEnvironment tableEnv = HiveTestUtils.createTableEnvWithBlinkPlannerBatchMode();
+		tableEnv.registerCatalog(catalog.getName(), catalog);
+		tableEnv.useCatalog(catalog.getName());
 		return tableEnv;
 	}
 
